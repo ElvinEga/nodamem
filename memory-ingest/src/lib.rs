@@ -213,11 +213,11 @@ impl LessonExtractor for DeterministicLessonExtractor {
         let now = Utc::now();
         let statement = sentence_summary(text);
         let lesson_type = if lower.contains("should") || lower.contains("best practice") {
-            LessonType::Strategic
+            LessonType::Strategy
         } else if lower.contains("remember") {
-            LessonType::Preference
+            LessonType::User
         } else {
-            LessonType::Behavioral
+            LessonType::Task
         };
 
         vec![Lesson {
@@ -227,6 +227,7 @@ impl LessonExtractor for DeterministicLessonExtractor {
             title: truncate_title(&statement),
             statement,
             confidence: 0.45,
+            evidence_count: nodes.len() as u32,
             reinforcement_count: 0,
             supporting_node_ids: nodes.iter().map(|node| node.id).collect(),
             contradicting_node_ids: Vec::new(),
@@ -800,10 +801,7 @@ mod tests {
         assert_eq!(output.candidate_nodes[0].node_type, NodeType::Episodic);
         assert!(!output.extracted_entities.is_empty());
         assert_eq!(output.candidate_lessons.len(), 1);
-        assert_eq!(
-            output.candidate_lessons[0].lesson_type,
-            LessonType::Preference
-        );
+        assert_eq!(output.candidate_lessons[0].lesson_type, LessonType::User);
         assert!(output.salience_score > 0.5);
     }
 
@@ -855,7 +853,7 @@ mod tests {
         assert_eq!(output.candidate_lessons.len(), 1);
         assert_eq!(
             output.candidate_lessons[0].lesson_type,
-            LessonType::Strategic
+            LessonType::Strategy
         );
         assert!(output.candidate_edges.iter().any(|edge| edge.weight > 0.0));
     }
