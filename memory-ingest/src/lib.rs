@@ -2,8 +2,8 @@
 
 use chrono::Utc;
 use memory_core::{
-    CoreMarker, Edge, EdgeId, EdgeType, Lesson, LessonId, LessonType, MemoryStatus, Node, NodeId,
-    NodeType,
+    AdmissionAction, AdmissionDecision, AdmissionPolicy, AdmissionScore, CoreMarker, Edge, EdgeId,
+    EdgeType, Lesson, LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -73,6 +73,35 @@ pub struct IngestOutput {
     pub candidate_lessons: Vec<Lesson>,
     pub salience_score: f32,
     pub extracted_entities: Vec<ExtractedEntity>,
+}
+
+/// Existing graph context available when evaluating candidate memory admission.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AdmissionContext {
+    pub existing_nodes: Vec<Node>,
+    pub existing_edges: Vec<Edge>,
+}
+
+/// Best available duplicate or near-duplicate match for a candidate memory.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DuplicateMatch {
+    pub node_id: NodeId,
+    pub similarity: f32,
+}
+
+/// Hook for future duplicate detection implementations.
+pub trait DuplicateDetector {
+    fn find_duplicate(
+        &self,
+        candidate: &Node,
+        context: &AdmissionContext,
+    ) -> Option<DuplicateMatch>;
+}
+
+/// Admission interface for turning candidate memories into explicit policy decisions.
+pub trait MemoryAdmission {
+    fn evaluate(&self, output: &IngestOutput, context: &AdmissionContext)
+        -> Vec<AdmissionDecision>;
 }
 
 /// Interface for future event-to-memory extraction strategies.
@@ -204,6 +233,142 @@ impl LessonExtractor for DeterministicLessonExtractor {
             created_at: now,
             updated_at: now,
         }]
+    }
+}
+
+/// Deterministic duplicate detector based on token overlap with existing nodes.
+#[derive(Debug, Default)]
+pub struct DeterministicDuplicateDetector;
+
+impl DuplicateDetector for DeterministicDuplicateDetector {
+    fn find_duplicate(
+        &self,
+        candidate: &Node,
+        context: &AdmissionContext,
+    ) -> Option<DuplicateMatch> {
+        context
+            .existing_nodes
+            .iter()
+            .filter_map(|existing| {
+                let similarity = similarity_score(candidate, existing);
+                (similarity >= 0.65).then_some(DuplicateMatch {
+                    node_id: existing.id,
+                    similarity,
+                })
+            })
+            .max_by(|left, right| left.similarity.total_cmp(&right.similarity))
+    }
+}
+
+/// Policy-driven deterministic admission engine.
+#[derive(Debug, Clone)]
+pub struct AdmissionEngine<D> {
+    pub policy: AdmissionPolicy,
+    pub duplicate_detector: D,
+}
+
+impl<D> AdmissionEngine<D> {
+    #[must_use]
+    pub fn new(policy: AdmissionPolicy, duplicate_detector: D) -> Self {
+        Self {
+            policy,
+            duplicate_detector,
+        }
+    }
+}
+
+impl Default for AdmissionEngine<DeterministicDuplicateDetector> {
+    fn default() -> Self {
+        Self::new(AdmissionPolicy::default(), DeterministicDuplicateDetector)
+    }
+}
+
+impl<D> MemoryAdmission for AdmissionEngine<D>
+where
+    D: DuplicateDetector,
+{
+    fn evaluate(
+        &self,
+        output: &IngestOutput,
+        context: &AdmissionContext,
+    ) -> Vec<AdmissionDecision> {
+        output
+            .candidate_nodes
+            .iter()
+            .map(|candidate| self.evaluate_candidate(candidate, output, context))
+            .collect()
+    }
+}
+
+impl<D> AdmissionEngine<D>
+where
+    D: DuplicateDetector,
+{
+    fn evaluate_candidate(
+        &self,
+        candidate: &Node,
+        output: &IngestOutput,
+        context: &AdmissionContext,
+    ) -> AdmissionDecision {
+        let duplicate = self.duplicate_detector.find_duplicate(candidate, context);
+        let score = build_admission_score(candidate, output, context, duplicate.as_ref());
+        let connected_enough = score.connectedness >= self.policy.min_connectedness;
+        let root_worthy = score.importance >= self.policy.min_root_importance;
+        let total_enough = score.total >= self.policy.min_total_score;
+
+        let (action, matched_node_id, reason) = if let Some(match_result) = duplicate.as_ref() {
+            if match_result.similarity >= self.policy.merge_similarity_threshold {
+                (
+                    AdmissionAction::MergeIntoExistingNode {
+                        target_node_id: match_result.node_id,
+                    },
+                    Some(match_result.node_id),
+                    "high similarity to existing node".to_owned(),
+                )
+            } else if match_result.similarity >= self.policy.attach_similarity_threshold
+                && total_enough
+            {
+                (
+                    AdmissionAction::AttachAsEvidence {
+                        target_node_id: match_result.node_id,
+                    },
+                    Some(match_result.node_id),
+                    "similar to existing node and useful as evidence".to_owned(),
+                )
+            } else if (connected_enough || root_worthy) && total_enough {
+                (
+                    AdmissionAction::CreateNewNode,
+                    None,
+                    "valuable enough to preserve as a separate node".to_owned(),
+                )
+            } else {
+                (
+                    AdmissionAction::Reject,
+                    Some(match_result.node_id),
+                    "duplicate-like but too weak for separate admission".to_owned(),
+                )
+            }
+        } else if (connected_enough || root_worthy) && total_enough {
+            (
+                AdmissionAction::CreateNewNode,
+                None,
+                "sufficiently connected or important for admission".to_owned(),
+            )
+        } else {
+            (
+                AdmissionAction::Reject,
+                None,
+                "isolated low-value candidate".to_owned(),
+            )
+        };
+
+        AdmissionDecision {
+            candidate_node_id: candidate.id,
+            action,
+            score,
+            matched_node_id,
+            reason,
+        }
     }
 }
 
@@ -470,6 +635,138 @@ fn truncate_title(text: &str) -> String {
     }
 }
 
+fn build_admission_score(
+    candidate: &Node,
+    output: &IngestOutput,
+    context: &AdmissionContext,
+    duplicate: Option<&DuplicateMatch>,
+) -> AdmissionScore {
+    let connectedness = connectedness_score(candidate, output, context);
+    let usefulness = usefulness_score(candidate, output);
+    let recurrence = recurrence_score(candidate, context);
+    let novelty = novelty_score(duplicate);
+    let importance = candidate.importance.clamp(0.0, 1.0);
+    let total = (connectedness * 0.25
+        + usefulness * 0.2
+        + recurrence * 0.15
+        + novelty * 0.15
+        + importance * 0.25)
+        .clamp(0.0, 1.0);
+
+    AdmissionScore {
+        connectedness,
+        usefulness,
+        recurrence,
+        novelty,
+        importance,
+        total,
+    }
+}
+
+fn connectedness_score(candidate: &Node, output: &IngestOutput, context: &AdmissionContext) -> f32 {
+    let candidate_edge_count = output
+        .candidate_edges
+        .iter()
+        .filter(|edge| edge.from_node_id == candidate.id || edge.to_node_id == candidate.id)
+        .count() as f32;
+    let shared_tag_hit = context
+        .existing_nodes
+        .iter()
+        .any(|existing| existing.tags.iter().any(|tag| candidate.tags.contains(tag)));
+
+    ((candidate_edge_count / 4.0) + if shared_tag_hit { 0.35 } else { 0.0 }).clamp(0.0, 1.0)
+}
+
+fn usefulness_score(candidate: &Node, output: &IngestOutput) -> f32 {
+    let title_hint = candidate.title.to_ascii_lowercase();
+    let content_hint = candidate
+        .content
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let lesson_bonus = if !output.candidate_lessons.is_empty() {
+        0.2
+    } else {
+        0.0
+    };
+    let utility_bonus = if content_hint.contains("error")
+        || content_hint.contains("failed")
+        || content_hint.contains("remember")
+        || content_hint.contains("should")
+        || title_hint.contains("tool_result")
+    {
+        0.3
+    } else {
+        0.0
+    };
+
+    (0.3 + lesson_bonus + utility_bonus).clamp(0.0, 1.0)
+}
+
+fn recurrence_score(candidate: &Node, context: &AdmissionContext) -> f32 {
+    let candidate_terms = normalized_terms(candidate);
+    let overlap_count = context
+        .existing_nodes
+        .iter()
+        .filter(|existing| {
+            let existing_terms = normalized_terms(existing);
+            candidate_terms
+                .iter()
+                .filter(|term| existing_terms.contains(*term))
+                .count()
+                >= 2
+        })
+        .count() as f32;
+
+    (overlap_count / 3.0).clamp(0.0, 1.0)
+}
+
+fn novelty_score(duplicate: Option<&DuplicateMatch>) -> f32 {
+    match duplicate {
+        Some(match_result) => (1.0 - match_result.similarity).clamp(0.0, 1.0),
+        None => 1.0,
+    }
+}
+
+fn similarity_score(candidate: &Node, existing: &Node) -> f32 {
+    let candidate_terms = normalized_terms(candidate);
+    let existing_terms = normalized_terms(existing);
+
+    if candidate_terms.is_empty() || existing_terms.is_empty() {
+        return 0.0;
+    }
+
+    let overlap = candidate_terms
+        .iter()
+        .filter(|term| existing_terms.contains(*term))
+        .count() as f32;
+    let denominator = candidate_terms.len().max(existing_terms.len()) as f32;
+
+    (overlap / denominator).clamp(0.0, 1.0)
+}
+
+fn normalized_terms(node: &Node) -> Vec<String> {
+    let mut terms = Vec::new();
+    terms.extend(split_terms(&node.title));
+    terms.extend(split_terms(&node.summary));
+    if let Some(content) = &node.content {
+        terms.extend(split_terms(content));
+    }
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+fn split_terms(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|term| {
+            term.trim_matches(|character: char| !character.is_alphanumeric())
+                .to_ascii_lowercase()
+        })
+        .filter(|term| term.len() > 2)
+        .collect()
+}
+
 /// Marker preserved for lightweight crate composition.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IngestMarker {
@@ -478,10 +775,17 @@ pub struct IngestMarker {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+    use memory_core::{
+        AdmissionAction, AdmissionPolicy, LessonType, MemoryStatus, Node, NodeId, NodeType,
+    };
     use serde_json::json;
+    use uuid::Uuid;
 
-    use super::{IngestEvent, IngestPipeline, MessageEvent, SystemEvent, ToolResultEvent};
-    use memory_core::{LessonType, NodeType};
+    use super::{
+        AdmissionContext, AdmissionEngine, DeterministicDuplicateDetector, IngestEvent,
+        IngestPipeline, MemoryAdmission, MessageEvent, SystemEvent, ToolResultEvent,
+    };
 
     #[test]
     fn ingests_user_message_into_candidate_memory() {
@@ -554,5 +858,77 @@ mod tests {
             LessonType::Strategic
         );
         assert!(output.candidate_edges.iter().any(|edge| edge.weight > 0.0));
+    }
+
+    #[test]
+    fn rejects_isolated_low_value_memory() {
+        let pipeline = IngestPipeline::new();
+        let output = pipeline.ingest(&IngestEvent::UserMessage(MessageEvent {
+            event_id: "evt-user-low".to_owned(),
+            session_id: None,
+            message_id: None,
+            text: "I had toast.".to_owned(),
+        }));
+
+        let engine = AdmissionEngine::default();
+        let decisions = engine.evaluate(&output, &AdmissionContext::default());
+
+        assert!(decisions
+            .iter()
+            .any(|decision| matches!(decision.action, AdmissionAction::Reject)));
+    }
+
+    #[test]
+    fn accepts_connected_important_memory() {
+        let pipeline = IngestPipeline::new();
+        let output = pipeline.ingest(&IngestEvent::ToolResult(ToolResultEvent {
+            event_id: "evt-tool-important".to_owned(),
+            tool_name: "cargo".to_owned(),
+            invocation_id: Some("invoke-2".to_owned()),
+            content_text:
+                "Important: cargo failed again in Nodamem migration flow and we should remember this fix."
+                    .to_owned(),
+            metadata: json!({"exit_code": 101}),
+        }));
+
+        let context = AdmissionContext {
+            existing_nodes: vec![Node {
+                id: NodeId(Uuid::new_v4()),
+                node_type: NodeType::Entity,
+                status: MemoryStatus::Active,
+                title: "Nodamem".to_owned(),
+                summary: "Main project".to_owned(),
+                content: Some("cargo migration work".to_owned()),
+                tags: vec!["project".to_owned(), "cargo".to_owned()],
+                confidence: 0.9,
+                importance: 0.9,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                last_accessed_at: None,
+                source_event_id: Some("seed".to_owned()),
+            }],
+            existing_edges: Vec::new(),
+        };
+
+        let engine = AdmissionEngine::new(
+            AdmissionPolicy {
+                min_total_score: 0.45,
+                ..AdmissionPolicy::default()
+            },
+            DeterministicDuplicateDetector,
+        );
+        let decisions = engine.evaluate(&output, &context);
+
+        assert!(decisions.iter().any(|decision| {
+            matches!(
+                decision.action,
+                AdmissionAction::CreateNewNode
+                    | AdmissionAction::AttachAsEvidence { .. }
+                    | AdmissionAction::MergeIntoExistingNode { .. }
+            )
+        }));
+        assert!(decisions
+            .iter()
+            .any(|decision| decision.score.connectedness > 0.0));
     }
 }
