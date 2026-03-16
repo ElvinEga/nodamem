@@ -186,6 +186,25 @@ where
                     };
                 }
                 ContradictionDisposition::Refine
+                    if similar.similarity >= self.policy.min_similarity_for_reinforcement =>
+                {
+                    info!(
+                        candidate_lesson_id = %candidate.id.0,
+                        target_lesson_id = %existing_lesson.id.0,
+                        similarity = similar.similarity,
+                        evidence_increment = proposal.source_memory_ids.len(),
+                        "high-similarity lesson proposal reinforced instead of refining"
+                    );
+                    return LessonOutcome::ReinforceExisting {
+                        updated_lesson: reinforce_lesson(
+                            existing_lesson,
+                            self.policy.confidence_increment,
+                            proposal.source_memory_ids.len() as u32,
+                        ),
+                        evidence_links: supporting_links(existing_lesson.id, &proposal),
+                    };
+                }
+                ContradictionDisposition::Refine
                     if similar.similarity >= self.policy.min_similarity_for_refinement =>
                 {
                     info!(
