@@ -617,10 +617,10 @@ mod tests {
             }],
             traits: vec![TraitState {
                 id: TraitId(Uuid::new_v4()),
-                trait_type: TraitType::Reliability,
+                trait_type: TraitType::EvidenceReliance,
                 status: MemoryStatus::Active,
-                label: "Reliable".to_owned(),
-                description: "Favors stable startup paths.".to_owned(),
+                label: "Evidence Reliance".to_owned(),
+                description: "Favors validated signals before deciding.".to_owned(),
                 strength: 0.8,
                 confidence: 0.7,
                 supporting_lesson_ids: Vec::new(),
