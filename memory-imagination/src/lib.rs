@@ -88,7 +88,7 @@ impl ImaginationService {
     fn build_scenario(
         &self,
         planning_task: &str,
-        cluster: &[Node],
+        cluster: &[&Node],
         goal: Option<&Node>,
         lessons: &[Lesson],
         trait_snapshot: &[TraitState],
@@ -318,7 +318,7 @@ fn select_supporting_lessons(
 }
 
 fn build_predicted_outcomes(
-    cluster: &[Node],
+    cluster: &[&Node],
     goal: Option<&Node>,
     lessons: &[Lesson],
     trait_snapshot: &[TraitState],
@@ -374,7 +374,7 @@ fn cluster_rank(cluster: &[&Node]) -> f32 {
 }
 
 fn plausibility_score(
-    cluster: &[Node],
+    cluster: &[&Node],
     goal: Option<&Node>,
     lessons: &[Lesson],
     trait_snapshot: &[TraitState],
@@ -391,7 +391,7 @@ fn plausibility_score(
         .clamp(0.0, 1.0)
 }
 
-fn novelty_score(cluster: &[Node], lessons: &[Lesson], trait_snapshot: &[TraitState]) -> f32 {
+fn novelty_score(cluster: &[&Node], lessons: &[Lesson], trait_snapshot: &[TraitState]) -> f32 {
     let unique_tags = cluster
         .iter()
         .flat_map(|node| node.tags.iter().cloned())
