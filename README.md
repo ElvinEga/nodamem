@@ -25,3 +25,12 @@ Developer notes:
 - Audit stored provenance with `StoreRepository::inspect_node_audit` and `StoreRepository::inspect_lesson_audit`.
 - Enable `tracing` subscribers in the binary or tests to inspect admission decisions, retrieval scoring, reinforcement, trait updates, and consolidation changes.
 - See [docs/debugging-graph-behavior.md](/home/snakeos/Development/rust/nodamem/docs/debugging-graph-behavior.md) for the recommended debugging workflow.
+
+## Storage
+
+Nodamem defaults to embedded local storage through `memory-store`.
+
+- Local-first mode is the default and does not require network access.
+- Optional Turso Cloud sync hooks are available through `NODAMEM_TURSO_SYNC_ENABLED`, `TURSO_DATABASE_URL`, and `TURSO_AUTH_TOKEN`.
+- If sync is requested but incomplete, Nodamem stays in offline/local-only mode.
+- See [docs/turso-sync.md](/home/snakeos/Development/rust/nodamem/docs/turso-sync.md) for the storage and sync behavior.
