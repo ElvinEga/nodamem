@@ -56,11 +56,12 @@ pub fn map_lesson(
         title: row.get(3)?,
         statement: row.get(4)?,
         confidence: row.get::<f64>(5)? as f32,
-        reinforcement_count: row.get::<i64>(6)? as u32,
+        evidence_count: row.get::<i64>(6)? as u32,
+        reinforcement_count: row.get::<i64>(7)? as u32,
         supporting_node_ids,
         contradicting_node_ids,
-        created_at: parse_timestamp(&row.get::<String>(7)?)?,
-        updated_at: parse_timestamp(&row.get::<String>(8)?)?,
+        created_at: parse_timestamp(&row.get::<String>(8)?)?,
+        updated_at: parse_timestamp(&row.get::<String>(9)?)?,
     })
 }
 
@@ -162,12 +163,12 @@ pub fn format_edge_type(value: EdgeType) -> &'static str {
 
 pub fn format_lesson_type(value: LessonType) -> &'static str {
     match value {
-        LessonType::Factual => "factual",
-        LessonType::Procedural => "procedural",
-        LessonType::Strategic => "strategic",
-        LessonType::Behavioral => "behavioral",
-        LessonType::Preference => "preference",
-        LessonType::Safety => "safety",
+        LessonType::User => "user_lesson",
+        LessonType::System => "system_lesson",
+        LessonType::Task => "task_lesson",
+        LessonType::Strategy => "strategy_lesson",
+        LessonType::Domain => "domain_lesson",
+        LessonType::Personality => "personality_lesson",
     }
 }
 
@@ -266,12 +267,12 @@ pub fn parse_edge_type(value: &str) -> Result<EdgeType, StoreError> {
 
 pub fn parse_lesson_type(value: &str) -> Result<LessonType, StoreError> {
     match value {
-        "factual" => Ok(LessonType::Factual),
-        "procedural" => Ok(LessonType::Procedural),
-        "strategic" => Ok(LessonType::Strategic),
-        "behavioral" => Ok(LessonType::Behavioral),
-        "preference" => Ok(LessonType::Preference),
-        "safety" => Ok(LessonType::Safety),
+        "user_lesson" => Ok(LessonType::User),
+        "system_lesson" => Ok(LessonType::System),
+        "task_lesson" => Ok(LessonType::Task),
+        "strategy_lesson" => Ok(LessonType::Strategy),
+        "domain_lesson" => Ok(LessonType::Domain),
+        "personality_lesson" => Ok(LessonType::Personality),
         _ => Err(StoreError::InvalidValue {
             field: "lesson_type",
             value: value.to_owned(),
