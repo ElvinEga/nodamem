@@ -8,4 +8,3 @@ pub struct RetrievalMarker {
     pub core: CoreMarker,
     pub store: StoreMarker,
 }
-
