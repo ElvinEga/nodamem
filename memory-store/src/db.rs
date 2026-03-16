@@ -1,49 +1,13 @@
 //! Database bootstrap for local-first libSQL storage.
 
-use std::error::Error as StdError;
-use std::fmt;
 use std::path::Path;
 
 use libsql::{Connection, Database};
 
 use crate::config::StoreConfig;
+use crate::error::StoreError;
 use crate::migrations::run_migrations;
-
-#[derive(Debug)]
-pub enum StoreError {
-    Io(std::io::Error),
-    Libsql(libsql::Error),
-}
-
-impl fmt::Display for StoreError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(error) => write!(formatter, "io error: {error}"),
-            Self::Libsql(error) => write!(formatter, "libsql error: {error}"),
-        }
-    }
-}
-
-impl StdError for StoreError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            Self::Libsql(error) => Some(error),
-        }
-    }
-}
-
-impl From<std::io::Error> for StoreError {
-    fn from(error: std::io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-impl From<libsql::Error> for StoreError {
-    fn from(error: libsql::Error) -> Self {
-        Self::Libsql(error)
-    }
-}
+use crate::repository::StoreRepository;
 
 #[derive(Debug)]
 pub struct StoreRuntime {
@@ -74,6 +38,11 @@ impl StoreRuntime {
     pub async fn smoke_check(&self) -> Result<(), StoreError> {
         self.connection.execute("SELECT 1", ()).await?;
         Ok(())
+    }
+
+    #[must_use]
+    pub fn repository(&self) -> StoreRepository<'_> {
+        StoreRepository::new(&self.connection)
     }
 }
 
