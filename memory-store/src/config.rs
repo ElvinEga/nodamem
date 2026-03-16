@@ -6,6 +6,7 @@ use std::path::PathBuf;
 const DEFAULT_LOCAL_DATABASE_PATH: &str = "data/nodamem.db";
 const DEFAULT_SYNC_ENABLED: bool = false;
 const DEFAULT_TURSO_READ_YOUR_WRITES: bool = true;
+const DEFAULT_TURSO_SYNC_REQUIRED: bool = false;
 
 /// Optional Turso Cloud sync configuration.
 ///
@@ -22,6 +23,7 @@ pub struct TursoSyncConfig {
 pub struct StoreConfig {
     pub local_database_path: PathBuf,
     pub sync_enabled: bool,
+    pub turso_sync_required: bool,
     pub turso_database_url: Option<String>,
     pub turso_auth_token: Option<String>,
     pub turso_read_your_writes: bool,
@@ -32,6 +34,7 @@ impl Default for StoreConfig {
         Self {
             local_database_path: PathBuf::from(DEFAULT_LOCAL_DATABASE_PATH),
             sync_enabled: DEFAULT_SYNC_ENABLED,
+            turso_sync_required: DEFAULT_TURSO_SYNC_REQUIRED,
             turso_database_url: None,
             turso_auth_token: None,
             turso_read_your_writes: DEFAULT_TURSO_READ_YOUR_WRITES,
@@ -50,6 +53,10 @@ impl StoreConfig {
                 .ok()
                 .and_then(|value| parse_bool(&value))
                 .unwrap_or(DEFAULT_SYNC_ENABLED),
+            turso_sync_required: env::var("NODAMEM_TURSO_SYNC_REQUIRED")
+                .ok()
+                .and_then(|value| parse_bool(&value))
+                .unwrap_or(DEFAULT_TURSO_SYNC_REQUIRED),
             turso_database_url: read_optional_env("TURSO_DATABASE_URL"),
             turso_auth_token: read_optional_env("TURSO_AUTH_TOKEN"),
             turso_read_your_writes: env::var("NODAMEM_TURSO_READ_YOUR_WRITES")
@@ -136,5 +143,12 @@ mod tests {
 
         assert!(config.sync_requested_without_credentials());
         assert!(config.turso_sync_config().is_none());
+    }
+
+    #[test]
+    fn sync_is_not_required_by_default() {
+        let config = StoreConfig::default();
+
+        assert!(!config.turso_sync_required);
     }
 }
