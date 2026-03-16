@@ -15,3 +15,5 @@ Cargo.lock
 *.shm
 *.log
 .direnv/
+.env
+.env.local
