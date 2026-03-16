@@ -103,13 +103,14 @@ pub enum LessonType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TraitType {
-    CommunicationStyle,
-    PlanningStyle,
-    RiskTolerance,
-    Creativity,
-    Reliability,
     Curiosity,
-    Collaboration,
+    Caution,
+    Verbosity,
+    NoveltySeeking,
+    EvidenceReliance,
+    Reliability,
+    Practicality,
+    Proactivity,
 }
 
 /// Lifecycle state for verified or candidate memory records in the durable graph.
