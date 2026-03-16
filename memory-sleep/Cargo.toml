@@ -5,9 +5,10 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+chrono = "0.4"
 memory-core = { path = "../memory-core" }
 memory-lessons = { path = "../memory-lessons" }
+uuid = { version = "1", features = ["v4"] }
 
 [lints]
 workspace = true
-
