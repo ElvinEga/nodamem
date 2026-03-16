@@ -1,13 +1,14 @@
 CREATE TABLE IF NOT EXISTS trait_state (
     id TEXT PRIMARY KEY,
     trait_type TEXT NOT NULL CHECK (trait_type IN (
-        'communication_style',
-        'planning_style',
-        'risk_tolerance',
-        'creativity',
-        'reliability',
         'curiosity',
-        'collaboration'
+        'caution',
+        'verbosity',
+        'novelty_seeking',
+        'evidence_reliance',
+        'reliability',
+        'practicality',
+        'proactivity'
     )),
     status TEXT NOT NULL CHECK (status IN (
         'candidate',
@@ -39,4 +40,3 @@ BEGIN
     SET updated_at = CURRENT_TIMESTAMP
     WHERE id = NEW.id;
 END;
-
