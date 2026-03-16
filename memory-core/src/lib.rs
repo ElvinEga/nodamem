@@ -91,12 +91,12 @@ pub enum EdgeType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LessonType {
-    Factual,
-    Procedural,
-    Strategic,
-    Behavioral,
-    Preference,
-    Safety,
+    User,
+    System,
+    Task,
+    Strategy,
+    Domain,
+    Personality,
 }
 
 /// Category for a longer-lived personality tendency, kept separate from lessons and memories.
@@ -181,6 +181,7 @@ pub struct Lesson {
     pub title: String,
     pub statement: String,
     pub confidence: f32,
+    pub evidence_count: u32,
     pub reinforcement_count: u32,
     pub supporting_node_ids: Vec<NodeId>,
     pub contradicting_node_ids: Vec<NodeId>,
