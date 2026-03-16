@@ -576,11 +576,12 @@ mod tests {
             lessons: vec![
                 Lesson {
                     id: LessonId(Uuid::new_v4()),
-                    lesson_type: LessonType::Strategic,
+                    lesson_type: LessonType::Strategy,
                     status: MemoryStatus::Active,
                     title: "Handle migrations early".to_owned(),
                     statement: "Database migrations should run at startup.".to_owned(),
                     confidence: 0.8,
+                    evidence_count: 2,
                     reinforcement_count: 3,
                     supporting_node_ids: vec![node_a.id, node_b.id],
                     contradicting_node_ids: Vec::new(),
@@ -589,12 +590,13 @@ mod tests {
                 },
                 Lesson {
                     id: LessonId(Uuid::new_v4()),
-                    lesson_type: LessonType::Procedural,
+                    lesson_type: LessonType::Task,
                     status: MemoryStatus::Active,
                     title: "Expand graph neighbors".to_owned(),
                     statement: "Graph retrieval should include related neighboring nodes."
                         .to_owned(),
                     confidence: 0.75,
+                    evidence_count: 2,
                     reinforcement_count: 2,
                     supporting_node_ids: vec![node_c.id, node_e.id],
                     contradicting_node_ids: Vec::new(),
