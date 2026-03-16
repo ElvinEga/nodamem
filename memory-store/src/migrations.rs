@@ -2,7 +2,7 @@
 
 use libsql::{params, Connection};
 
-use crate::db::StoreError;
+use crate::error::StoreError;
 
 #[derive(Debug, Clone, Copy)]
 struct Migration {
@@ -71,8 +71,8 @@ const MIGRATIONS: &[Migration] = &[
 
 pub async fn run_migrations(connection: &Connection) -> Result<(), StoreError> {
     for migration in MIGRATIONS {
-        let should_apply =
-            migration.version == "0000" || !migration_applied(connection, migration.version).await?;
+        let should_apply = migration.version == "0000"
+            || !migration_applied(connection, migration.version).await?;
 
         if should_apply {
             connection.execute_batch(migration.sql).await?;
