@@ -5,8 +5,10 @@ use memory_core::{
     Checkpoint, Edge, ImaginedScenario, Lesson, LessonId, Node, NodeId, ScenarioId, TraitId,
     TraitState, WorkingMemoryEntry,
 };
+use tracing::debug;
 use uuid::Uuid;
 
+use crate::audit::{LessonAuditTrail, NodeAuditTrail};
 use crate::error::StoreError;
 use crate::mapper::{
     format_edge_type, format_lesson_type, format_memory_status, format_node_type,
@@ -363,6 +365,162 @@ impl<'a> StoreRepository<'a> {
         Ok(checkpoints)
     }
 
+    pub async fn inspect_node_audit(
+        &self,
+        node_id: NodeId,
+    ) -> Result<Option<NodeAuditTrail>, StoreError> {
+        let Some(node) = self.get_node_by_id(node_id).await? else {
+            return Ok(None);
+        };
+
+        let inbound_edges = self.load_edges_for_node(node_id, true).await?;
+        let outbound_edges = self.load_edges_for_node(node_id, false).await?;
+        let (supporting_lessons, contradicting_lessons) =
+            self.load_lessons_for_node(node_id).await?;
+        let supporting_traits = self
+            .load_all_trait_states()
+            .await?
+            .into_iter()
+            .filter(|trait_state| trait_state.supporting_node_ids.contains(&node_id))
+            .collect::<Vec<_>>();
+        let checkpoints = self
+            .load_all_checkpoints()
+            .await?
+            .into_iter()
+            .filter(|checkpoint| checkpoint.node_ids.contains(&node_id))
+            .collect::<Vec<_>>();
+
+        let mut reasons = Vec::new();
+        if let Some(source_event_id) = &node.source_event_id {
+            reasons.push(format!("source event: {source_event_id}"));
+        }
+        reasons.push(format!(
+            "graph links: {} inbound, {} outbound",
+            inbound_edges.len(),
+            outbound_edges.len()
+        ));
+        if !supporting_lessons.is_empty() {
+            reasons.push(format!(
+                "supports lessons: {}",
+                supporting_lessons
+                    .iter()
+                    .map(|lesson| lesson.title.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !supporting_traits.is_empty() {
+            reasons.push(format!(
+                "influences traits: {}",
+                supporting_traits
+                    .iter()
+                    .map(|trait_state| trait_state.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !checkpoints.is_empty() {
+            reasons.push(format!(
+                "included in checkpoints: {}",
+                checkpoints
+                    .iter()
+                    .map(|checkpoint| checkpoint.title.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
+        debug!(
+            node_id = %node_id.0,
+            inbound_edges = inbound_edges.len(),
+            outbound_edges = outbound_edges.len(),
+            supporting_lessons = supporting_lessons.len(),
+            contradicting_lessons = contradicting_lessons.len(),
+            supporting_traits = supporting_traits.len(),
+            checkpoints = checkpoints.len(),
+            "constructed node audit trail"
+        );
+
+        Ok(Some(NodeAuditTrail {
+            node,
+            inbound_edges,
+            outbound_edges,
+            supporting_lessons,
+            contradicting_lessons,
+            supporting_traits,
+            checkpoints,
+            reasons,
+        }))
+    }
+
+    pub async fn inspect_lesson_audit(
+        &self,
+        lesson_id: LessonId,
+    ) -> Result<Option<LessonAuditTrail>, StoreError> {
+        let Some(lesson) = self.load_lesson(lesson_id).await? else {
+            return Ok(None);
+        };
+
+        let supporting_nodes = self.load_nodes_by_ids(&lesson.supporting_node_ids).await?;
+        let contradicting_nodes = self.load_nodes_by_ids(&lesson.contradicting_node_ids).await?;
+        let influenced_traits = self
+            .load_all_trait_states()
+            .await?
+            .into_iter()
+            .filter(|trait_state| trait_state.supporting_lesson_ids.contains(&lesson_id))
+            .collect::<Vec<_>>();
+        let checkpoints = self
+            .load_all_checkpoints()
+            .await?
+            .into_iter()
+            .filter(|checkpoint| checkpoint.lesson_ids.contains(&lesson_id))
+            .collect::<Vec<_>>();
+
+        let mut reasons = vec![format!(
+            "evidence counts: {} supporting, {} contradicting",
+            supporting_nodes.len(),
+            contradicting_nodes.len()
+        )];
+        if !influenced_traits.is_empty() {
+            reasons.push(format!(
+                "shapes traits: {}",
+                influenced_traits
+                    .iter()
+                    .map(|trait_state| trait_state.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !checkpoints.is_empty() {
+            reasons.push(format!(
+                "referenced by checkpoints: {}",
+                checkpoints
+                    .iter()
+                    .map(|checkpoint| checkpoint.title.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
+        debug!(
+            lesson_id = %lesson_id.0,
+            supporting_nodes = supporting_nodes.len(),
+            contradicting_nodes = contradicting_nodes.len(),
+            influenced_traits = influenced_traits.len(),
+            checkpoints = checkpoints.len(),
+            "constructed lesson audit trail"
+        );
+
+        Ok(Some(LessonAuditTrail {
+            lesson,
+            supporting_nodes,
+            contradicting_nodes,
+            influenced_traits,
+            checkpoints,
+            reasons,
+        }))
+    }
+
     pub async fn upsert_imagined_scenario(
         &self,
         scenario: &ImaginedScenario,
@@ -551,6 +709,127 @@ impl<'a> StoreRepository<'a> {
             .await?;
 
         Ok(deleted > 0)
+    }
+
+    async fn load_edges_for_node(
+        &self,
+        node_id: NodeId,
+        inbound: bool,
+    ) -> Result<Vec<Edge>, StoreError> {
+        let predicate = if inbound {
+            "to_node_id = ?1"
+        } else {
+            "from_node_id = ?1"
+        };
+        let query = format!(
+            "SELECT id, edge_type, from_node_id, to_node_id, weight, created_at, updated_at
+             FROM edges
+             WHERE {predicate}
+             ORDER BY updated_at DESC"
+        );
+
+        let mut rows = self
+            .connection
+            .query(&query, params![node_id.0.to_string()])
+            .await?;
+
+        let mut edges = Vec::new();
+        while let Some(row) = rows.next().await? {
+            edges.push(map_edge(&row)?);
+        }
+
+        Ok(edges)
+    }
+
+    async fn load_lessons_for_node(
+        &self,
+        node_id: NodeId,
+    ) -> Result<(Vec<Lesson>, Vec<Lesson>), StoreError> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT lesson_id, source_role
+                 FROM lesson_sources
+                 WHERE node_id = ?1",
+                params![node_id.0.to_string()],
+            )
+            .await?;
+
+        let mut supporting = Vec::new();
+        let mut contradicting = Vec::new();
+
+        while let Some(row) = rows.next().await? {
+            let lesson_id = LessonId(crate::mapper::parse_uuid(
+                row.get::<String>(0)?,
+                "lesson_sources.lesson_id",
+            )?);
+            let source_role: String = row.get(1)?;
+            if let Some(lesson) = self.load_lesson(lesson_id).await? {
+                match source_role.as_str() {
+                    "supporting" => supporting.push(lesson),
+                    "contradicting" => contradicting.push(lesson),
+                    _ => {
+                        return Err(StoreError::InvalidValue {
+                            field: "lesson_sources.source_role",
+                            value: source_role,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok((supporting, contradicting))
+    }
+
+    async fn load_all_trait_states(&self) -> Result<Vec<TraitState>, StoreError> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, trait_type, status, label, description, strength, confidence,
+                        supporting_lesson_ids_json, supporting_node_ids_json, created_at, updated_at
+                 FROM trait_state
+                 ORDER BY updated_at DESC",
+                params![],
+            )
+            .await?;
+
+        let mut traits = Vec::new();
+        while let Some(row) = rows.next().await? {
+            traits.push(map_trait_state(&row)?);
+        }
+
+        Ok(traits)
+    }
+
+    async fn load_all_checkpoints(&self) -> Result<Vec<Checkpoint>, StoreError> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, status, title, summary, node_ids_json, lesson_ids_json, trait_ids_json,
+                        created_at, updated_at
+                 FROM checkpoints
+                 ORDER BY updated_at DESC",
+                params![],
+            )
+            .await?;
+
+        let mut checkpoints = Vec::new();
+        while let Some(row) = rows.next().await? {
+            checkpoints.push(map_checkpoint(&row)?);
+        }
+
+        Ok(checkpoints)
+    }
+
+    async fn load_nodes_by_ids(&self, node_ids: &[NodeId]) -> Result<Vec<Node>, StoreError> {
+        let mut nodes = Vec::new();
+        for node_id in node_ids {
+            if let Some(node) = self.get_node_by_id(*node_id).await? {
+                nodes.push(node);
+            }
+        }
+
+        Ok(nodes)
     }
 
     async fn load_lesson(&self, lesson_id: LessonId) -> Result<Option<Lesson>, StoreError> {
@@ -812,6 +1091,32 @@ mod tests {
             .await
             .expect("working memory delete should work");
         assert!(deleted);
+
+        let node_audit = repository
+            .inspect_node_audit(source_node.id)
+            .await
+            .expect("node audit should work")
+            .expect("node audit should exist");
+        assert_eq!(node_audit.supporting_lessons.len(), 1);
+        assert_eq!(node_audit.supporting_traits.len(), 1);
+        assert_eq!(node_audit.checkpoints.len(), 1);
+        assert!(node_audit
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("source event")));
+
+        let lesson_audit = repository
+            .inspect_lesson_audit(saved_lesson.id)
+            .await
+            .expect("lesson audit should work")
+            .expect("lesson audit should exist");
+        assert_eq!(lesson_audit.supporting_nodes.len(), 1);
+        assert_eq!(lesson_audit.influenced_traits.len(), 1);
+        assert_eq!(lesson_audit.checkpoints.len(), 1);
+        assert!(lesson_audit
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("evidence counts")));
     }
 
     #[tokio::test]
