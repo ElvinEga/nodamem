@@ -184,15 +184,16 @@ impl<'a> StoreRepository<'a> {
         self.connection
             .execute(
                 "INSERT INTO lessons (
-                    id, lesson_type, status, title, statement, confidence, reinforcement_count,
-                    created_at, updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    id, lesson_type, status, title, statement, confidence, evidence_count,
+                    reinforcement_count, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(id) DO UPDATE SET
                     lesson_type = excluded.lesson_type,
                     status = excluded.status,
                     title = excluded.title,
                     statement = excluded.statement,
                     confidence = excluded.confidence,
+                    evidence_count = excluded.evidence_count,
                     reinforcement_count = excluded.reinforcement_count",
                 params![
                     lesson.id.0.to_string(),
@@ -201,6 +202,7 @@ impl<'a> StoreRepository<'a> {
                     lesson.title.clone(),
                     lesson.statement.clone(),
                     f64::from(lesson.confidence),
+                    i64::from(lesson.evidence_count),
                     i64::from(lesson.reinforcement_count),
                     format_timestamp(lesson.created_at),
                     format_timestamp(lesson.updated_at),
@@ -454,8 +456,8 @@ impl<'a> StoreRepository<'a> {
         let mut rows = self
             .connection
             .query(
-                "SELECT id, lesson_type, status, title, statement, confidence, reinforcement_count,
-                        created_at, updated_at
+                "SELECT id, lesson_type, status, title, statement, confidence, evidence_count,
+                        reinforcement_count, created_at, updated_at
                  FROM lessons
                  WHERE id = ?1",
                 params![lesson_id.0.to_string()],
@@ -597,11 +599,12 @@ mod tests {
 
         let lesson = Lesson {
             id: LessonId(Uuid::new_v4()),
-            lesson_type: LessonType::Strategic,
+            lesson_type: LessonType::Strategy,
             status: MemoryStatus::Active,
             title: "use structure".to_owned(),
             statement: "Structured memory retrieval improves consistency.".to_owned(),
             confidence: 0.8,
+            evidence_count: 1,
             reinforcement_count: 2,
             supporting_node_ids: vec![],
             contradicting_node_ids: vec![],
