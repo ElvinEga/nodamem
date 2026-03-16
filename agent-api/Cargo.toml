@@ -1,0 +1,19 @@
+[package]
+name = "agent-api"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+memory-core = { path = "../memory-core" }
+memory-imagination = { path = "../memory-imagination" }
+memory-ingest = { path = "../memory-ingest" }
+memory-lessons = { path = "../memory-lessons" }
+memory-personality = { path = "../memory-personality" }
+memory-retrieval = { path = "../memory-retrieval" }
+memory-sleep = { path = "../memory-sleep" }
+memory-store = { path = "../memory-store" }
+
+[lints]
+workspace = true
+

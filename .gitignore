@@ -1,0 +1,14 @@
+/target/
+Cargo.lock
+
+# Local databases and caches
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.wal
+*.shm
+*.log
+.direnv/
+

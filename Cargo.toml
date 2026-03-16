@@ -1,0 +1,31 @@
+[workspace]
+members = [
+    "agent-api",
+    "memory-core",
+    "memory-imagination",
+    "memory-ingest",
+    "memory-lessons",
+    "memory-personality",
+    "memory-retrieval",
+    "memory-sleep",
+    "memory-store",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+
+[workspace.lints.rust]
+rust_2018_idioms = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+module_name_repetitions = "allow"
+missing_const_for_fn = "allow"
+

@@ -1,0 +1,13 @@
+[package]
+name = "memory-retrieval"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+memory-core = { path = "../memory-core" }
+memory-store = { path = "../memory-store" }
+
+[lints]
+workspace = true
+

@@ -1,0 +1,12 @@
+[package]
+name = "memory-personality"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+memory-core = { path = "../memory-core" }
+
+[lints]
+workspace = true
+
