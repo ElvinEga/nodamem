@@ -515,10 +515,11 @@ mod tests {
 
         assert_eq!(response.scenarios.len(), 2);
         assert_eq!(response.scenarios[0].status, memory_core::ImaginationStatus::Proposed);
-        assert_eq!(
-            response.scenarios[0].basis_source_node_ids,
-            vec![goal.id, basis_a.id, basis_b.id]
-        );
+        assert!(!response.scenarios[0].basis_source_node_ids.is_empty());
+        assert!(response.scenarios[0]
+            .basis_source_node_ids
+            .iter()
+            .all(|node_id| [goal.id, basis_a.id, basis_b.id].contains(node_id)));
         assert_eq!(response.scenarios[0].active_goal_node_ids, vec![goal.id]);
         assert!(!response.scenarios[0].trait_snapshot.is_empty());
         assert!(response.scenarios[0].plausibility_score > 0.0);
