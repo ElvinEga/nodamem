@@ -1,13 +1,16 @@
 /target/
 /.target-check/
+/.tmp/
 Cargo.lock
 
 # Local databases and caches
 *.db
 *.db-*
+*.db-journal
 *.sqlite
 *.sqlite3
 *.sqlite-*
+*.sqlite-journal
 *.wal
 *.shm
 *.log
