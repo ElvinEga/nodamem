@@ -2,6 +2,7 @@
 
 use chrono::Utc;
 use memory_core::{CoreMarker, MemoryStatus, NodeId, TraitId, TraitState, TraitType};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Validated agent outcome used to update personality traits gradually over time.
@@ -75,6 +76,7 @@ impl PersonalityService {
         outcome: &OutcomeRecord,
     ) -> (Vec<TraitState>, Vec<TraitUpdate>) {
         if !outcome.validated {
+            debug!(outcome_id = %outcome.outcome_id, "skipping trait update for unvalidated outcome");
             return (traits.to_vec(), Vec::new());
         }
 
@@ -99,6 +101,17 @@ impl PersonalityService {
                 previous_strength: trait_state.strength,
                 updated_strength: updated.strength,
             });
+
+            info!(
+                outcome_id = %outcome.outcome_id,
+                subject_node_id = ?outcome.subject_node_id.map(|id| id.0.to_string()),
+                trait_type = ?trait_type,
+                signal,
+                previous_strength = trait_state.strength,
+                updated_strength = updated.strength,
+                updated_confidence = updated.confidence,
+                "applied trait update from validated outcome"
+            );
 
             if let Some(index) = existing_index {
                 updated_traits[index] = updated;
