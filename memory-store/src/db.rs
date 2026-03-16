@@ -7,6 +7,7 @@ use std::path::Path;
 use libsql::{Connection, Database};
 
 use crate::config::StoreConfig;
+use crate::migrations::run_migrations;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -58,6 +59,10 @@ impl StoreRuntime {
         let database_path = config.local_database_path.to_string_lossy().into_owned();
         let database = Database::open(database_path)?;
         let connection = database.connect()?;
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .await?;
+        run_migrations(&connection).await?;
 
         Ok(Self {
             config,
@@ -110,5 +115,22 @@ mod tests {
             .smoke_check()
             .await
             .expect("smoke check query should succeed");
+
+        let mut rows = runtime
+            .connection
+            .query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'nodes'",
+                (),
+            )
+            .await
+            .expect("schema lookup should succeed");
+
+        assert!(
+            rows.next()
+                .await
+                .expect("rows should be readable")
+                .is_some(),
+            "nodes table should exist after migrations"
+        );
     }
 }
