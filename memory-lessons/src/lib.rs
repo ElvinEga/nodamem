@@ -2,6 +2,7 @@
 
 use chrono::Utc;
 use memory_core::{CoreMarker, Lesson, LessonId, LessonType, MemoryStatus, Node, NodeId};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Candidate lesson proposed from accepted memories before persistence.
@@ -139,6 +140,11 @@ where
         accepted_memories: &[Node],
         existing_lessons: &[Lesson],
     ) -> Vec<LessonOutcome> {
+        debug!(
+            accepted_memories = accepted_memories.len(),
+            existing_lessons = existing_lessons.len(),
+            "processing accepted memories into lesson outcomes"
+        );
         let proposals = DeterministicLessonProposer::new(self.policy.clone())
             .propose_from_memories(accepted_memories);
 
@@ -168,6 +174,12 @@ where
                 .evaluate(candidate, existing_lesson)
             {
                 ContradictionDisposition::Contradiction => {
+                    info!(
+                        candidate_lesson_id = %candidate.id.0,
+                        target_lesson_id = %existing_lesson.id.0,
+                        similarity = similar.similarity,
+                        "lesson proposal triggered contradiction hook"
+                    );
                     return LessonOutcome::ContradictionHook {
                         target_lesson_id: existing_lesson.id,
                         evidence_links: contradiction_links(existing_lesson.id, &proposal),
@@ -176,6 +188,13 @@ where
                 ContradictionDisposition::Refine
                     if similar.similarity >= self.policy.min_similarity_for_refinement =>
                 {
+                    info!(
+                        candidate_lesson_id = %candidate.id.0,
+                        target_lesson_id = %existing_lesson.id.0,
+                        similarity = similar.similarity,
+                        evidence_increment = proposal.source_memory_ids.len(),
+                        "lesson proposal refined an existing lesson"
+                    );
                     return LessonOutcome::RefineExisting {
                         updated_lesson: refine_lesson(
                             existing_lesson,
@@ -190,6 +209,13 @@ where
             }
 
             if similar.similarity >= self.policy.min_similarity_for_reinforcement {
+                info!(
+                    candidate_lesson_id = %candidate.id.0,
+                    target_lesson_id = %existing_lesson.id.0,
+                    similarity = similar.similarity,
+                    evidence_increment = proposal.source_memory_ids.len(),
+                    "lesson proposal reinforced an existing lesson"
+                );
                 return LessonOutcome::ReinforceExisting {
                     updated_lesson: reinforce_lesson(
                         existing_lesson,
@@ -201,6 +227,11 @@ where
             }
         }
 
+        debug!(
+            candidate_lesson_id = %candidate.id.0,
+            lesson_type = ?candidate.lesson_type,
+            "lesson proposal will create a new lesson"
+        );
         LessonOutcome::CreateNew(proposal)
     }
 }
