@@ -1,12 +1,12 @@
 CREATE TABLE IF NOT EXISTS lessons (
     id TEXT PRIMARY KEY,
     lesson_type TEXT NOT NULL CHECK (lesson_type IN (
-        'factual',
-        'procedural',
-        'strategic',
-        'behavioral',
-        'preference',
-        'safety'
+        'user_lesson',
+        'system_lesson',
+        'task_lesson',
+        'strategy_lesson',
+        'domain_lesson',
+        'personality_lesson'
     )),
     status TEXT NOT NULL CHECK (status IN (
         'candidate',
@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS lessons (
     title TEXT NOT NULL,
     statement TEXT NOT NULL,
     confidence REAL NOT NULL DEFAULT 0.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    evidence_count INTEGER NOT NULL DEFAULT 0 CHECK (evidence_count >= 0),
     reinforcement_count INTEGER NOT NULL DEFAULT 0 CHECK (reinforcement_count >= 0),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -37,4 +38,3 @@ BEGIN
     SET updated_at = CURRENT_TIMESTAMP
     WHERE id = NEW.id;
 END;
-
