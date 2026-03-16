@@ -3,9 +3,9 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
 use libsql::Row;
 use memory_core::{
-    Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, ImaginationStatus, Lesson, LessonId,
-    LessonType, MemoryStatus, Node, NodeId, NodeType, Timestamp, TraitId, TraitState, TraitType,
-    WorkingMemoryEntry, WorkingMemoryId,
+    Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, ImaginedScenario, ImaginationStatus,
+    Lesson, LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType, ScenarioId, Timestamp,
+    TraitId, TraitState, TraitType, WorkingMemoryEntry, WorkingMemoryId,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -111,6 +111,41 @@ pub fn map_checkpoint(row: &Row) -> Result<Checkpoint, StoreError> {
     })
 }
 
+pub fn map_imagined_scenario(row: &Row) -> Result<ImaginedScenario, StoreError> {
+    Ok(ImaginedScenario {
+        id: ScenarioId(parse_uuid(row.get::<String>(0)?, "imagined_nodes.id")?),
+        status: parse_imagination_status(&row.get::<String>(1)?)?,
+        title: row.get(2)?,
+        premise: row.get(3)?,
+        narrative: row.get(4)?,
+        basis_source_node_ids: parse_id_list(
+            &row.get::<String>(5)?,
+            "imagined_nodes.basis_source_node_ids_json",
+            NodeId,
+        )?,
+        basis_lesson_ids: parse_id_list(
+            &row.get::<String>(6)?,
+            "imagined_nodes.basis_lesson_ids_json",
+            LessonId,
+        )?,
+        active_goal_node_ids: parse_id_list(
+            &row.get::<String>(7)?,
+            "imagined_nodes.active_goal_node_ids_json",
+            NodeId,
+        )?,
+        trait_snapshot: parse_json(&row.get::<String>(8)?, "imagined_nodes.trait_snapshot_json")?,
+        predicted_outcomes: parse_json(
+            &row.get::<String>(9)?,
+            "imagined_nodes.predicted_outcomes_json",
+        )?,
+        plausibility_score: row.get::<f64>(10)? as f32,
+        novelty_score: row.get::<f64>(11)? as f32,
+        usefulness_score: row.get::<f64>(12)? as f32,
+        created_at: parse_timestamp(&row.get::<String>(13)?)?,
+        updated_at: parse_timestamp(&row.get::<String>(14)?)?,
+    })
+}
+
 pub fn map_working_memory_entry(row: &Row) -> Result<WorkingMemoryEntry, StoreError> {
     Ok(WorkingMemoryEntry {
         id: WorkingMemoryId(parse_uuid(row.get::<String>(0)?, "working_memory.id")?),
@@ -203,6 +238,20 @@ pub fn format_imagination_status(value: ImaginationStatus) -> &'static str {
         ImaginationStatus::Reviewed => "reviewed",
         ImaginationStatus::AcceptedAsHypothesis => "accepted_as_hypothesis",
         ImaginationStatus::Rejected => "rejected",
+    }
+}
+
+pub fn parse_imagination_status(value: &str) -> Result<ImaginationStatus, StoreError> {
+    match value {
+        "proposed" => Ok(ImaginationStatus::Proposed),
+        "simulated" => Ok(ImaginationStatus::Simulated),
+        "reviewed" => Ok(ImaginationStatus::Reviewed),
+        "accepted_as_hypothesis" => Ok(ImaginationStatus::AcceptedAsHypothesis),
+        "rejected" => Ok(ImaginationStatus::Rejected),
+        _ => Err(StoreError::InvalidValue {
+            field: "imagination_status",
+            value: value.to_owned(),
+        }),
     }
 }
 
