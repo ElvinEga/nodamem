@@ -269,6 +269,59 @@ pub struct WorkingMemoryEntry {
     pub updated_at: Timestamp,
 }
 
+/// Action the admission layer may take for a candidate memory node.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionAction {
+    CreateNewNode,
+    MergeIntoExistingNode { target_node_id: NodeId },
+    AttachAsEvidence { target_node_id: NodeId },
+    Reject,
+}
+
+/// Scoring breakdown used by admission policy evaluation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdmissionScore {
+    pub connectedness: f32,
+    pub usefulness: f32,
+    pub recurrence: f32,
+    pub novelty: f32,
+    pub importance: f32,
+    pub total: f32,
+}
+
+/// Configurable thresholds for deciding whether a candidate memory should be admitted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdmissionPolicy {
+    pub min_total_score: f32,
+    pub min_connectedness: f32,
+    pub min_root_importance: f32,
+    pub merge_similarity_threshold: f32,
+    pub attach_similarity_threshold: f32,
+}
+
+impl Default for AdmissionPolicy {
+    fn default() -> Self {
+        Self {
+            min_total_score: 0.55,
+            min_connectedness: 0.25,
+            min_root_importance: 0.8,
+            merge_similarity_threshold: 0.9,
+            attach_similarity_threshold: 0.65,
+        }
+    }
+}
+
+/// Decision made by the memory admission layer for a single candidate node.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdmissionDecision {
+    pub candidate_node_id: NodeId,
+    pub action: AdmissionAction,
+    pub score: AdmissionScore,
+    pub matched_node_id: Option<NodeId>,
+    pub reason: String,
+}
+
 /// Marker type preserved for lightweight crate wiring and simple composition tests.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CoreMarker;
