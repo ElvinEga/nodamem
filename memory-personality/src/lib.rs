@@ -6,4 +6,3 @@ use memory_core::CoreMarker;
 pub struct PersonalityMarker {
     pub core: CoreMarker,
 }
-
