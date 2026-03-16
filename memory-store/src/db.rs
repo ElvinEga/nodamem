@@ -55,7 +55,8 @@ impl StoreRuntime {
     pub async fn open(config: StoreConfig) -> Result<Self, StoreError> {
         ensure_parent_dir(&config.local_database_path).await?;
 
-        let database = Database::open(config.local_database_path.clone())?;
+        let database_path = config.local_database_path.to_string_lossy().into_owned();
+        let database = Database::open(database_path)?;
         let connection = database.connect()?;
 
         Ok(Self {
