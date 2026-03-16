@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
 /// Shared timestamp type used across persisted memory graph records.
@@ -41,6 +42,11 @@ pub struct ScenarioId(pub Uuid);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MemoryPacketId(pub Uuid);
+
+/// Stable identifier for a working-memory entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WorkingMemoryId(pub Uuid);
 
 /// Graph node category used across verified memory, entities, goals, and governed imagined nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,6 +254,19 @@ pub struct MemoryPacket {
     pub traits: Vec<TraitState>,
     pub checkpoints: Vec<Checkpoint>,
     pub imagined_scenarios: Vec<ImaginedScenario>,
+}
+
+/// Transient task-scoped context stored separately from durable long-term memory.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkingMemoryEntry {
+    pub id: WorkingMemoryId,
+    pub scope_key: String,
+    pub session_id: Option<String>,
+    pub task_ref: Option<String>,
+    pub payload: JsonValue,
+    pub expires_at: Option<Timestamp>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
 }
 
 /// Marker type preserved for lightweight crate wiring and simple composition tests.
