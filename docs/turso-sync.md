@@ -8,6 +8,7 @@ The storage layer always opens an embedded local database unless sync is explici
 
 - `NODAMEM_DB_PATH`: local embedded database path. Default: `data/nodamem.db`
 - `NODAMEM_TURSO_SYNC_ENABLED`: enables the future sync path when set to `true`
+- `NODAMEM_TURSO_SYNC_REQUIRED`: if `true`, startup fails when sync initialization fails. Default: `false`
 - `TURSO_DATABASE_URL`: remote Turso database URL
 - `TURSO_AUTH_TOKEN`: remote Turso auth token
 - `NODAMEM_TURSO_READ_YOUR_WRITES`: optional libsql synced-database setting. Default: `true`
@@ -17,6 +18,9 @@ The storage layer always opens an embedded local database unless sync is explici
 - If `NODAMEM_TURSO_SYNC_ENABLED` is not set or is `false`, Nodamem opens a local embedded database.
 - If sync is enabled but `TURSO_DATABASE_URL` or `TURSO_AUTH_TOKEN` is missing, Nodamem logs a warning and stays in local-only mode.
 - If all sync settings are present, the storage bootstrap uses the current `libsql::Builder::new_synced_database(...)` integration point.
+- If synced startup fails and `NODAMEM_TURSO_SYNC_REQUIRED` is `false`, Nodamem logs a warning and falls back to embedded local mode.
+- If synced startup fails and `NODAMEM_TURSO_SYNC_REQUIRED` is `true`, startup returns the sync error.
+- Local bootstrap migrations run only for the local-only backend. Synced mode assumes schema management is handled outside the embedded bootstrap path.
 
 ## Design boundary
 
