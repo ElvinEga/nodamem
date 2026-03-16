@@ -4,11 +4,16 @@ use memory_core::CoreMarker;
 
 pub mod config;
 pub mod db;
+pub mod error;
+pub mod mapper;
 pub mod migrations;
+pub mod repository;
 
 pub use config::StoreConfig;
-pub use db::{open_database, StoreError, StoreRuntime};
+pub use db::{open_database, StoreRuntime};
+pub use error::StoreError;
 pub use migrations::run_migrations;
+pub use repository::{LessonSourceRole, StoreRepository};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StoreMarker {
