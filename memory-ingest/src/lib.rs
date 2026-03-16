@@ -686,9 +686,9 @@ fn usefulness_score(candidate: &Node, output: &IngestOutput) -> f32 {
         .unwrap_or_default()
         .to_ascii_lowercase();
     let lesson_bonus = if !output.candidate_lessons.is_empty() {
-        0.2
+        0.2_f32
     } else {
-        0.0
+        0.0_f32
     };
     let utility_bonus = if content_hint.contains("error")
         || content_hint.contains("failed")
@@ -696,12 +696,12 @@ fn usefulness_score(candidate: &Node, output: &IngestOutput) -> f32 {
         || content_hint.contains("should")
         || title_hint.contains("tool_result")
     {
-        0.3
+        0.3_f32
     } else {
-        0.0
+        0.0_f32
     };
 
-    (0.3 + lesson_bonus + utility_bonus).clamp(0.0, 1.0)
+    (0.3_f32 + lesson_bonus + utility_bonus).clamp(0.0_f32, 1.0_f32)
 }
 
 fn recurrence_score(candidate: &Node, context: &AdmissionContext) -> f32 {
