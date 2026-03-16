@@ -8,6 +8,7 @@ version.workspace = true
 chrono = "0.4"
 memory-core = { path = "../memory-core" }
 memory-store = { path = "../memory-store" }
+tracing = "0.1"
 uuid = "1"
 
 [lints]
