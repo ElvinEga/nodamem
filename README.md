@@ -16,3 +16,12 @@ Nodamem is a minimal Rust workspace for a local-first AI memory engine.
 
 Everything is intentionally minimal and compiling; business logic is not implemented yet.
 
+## Debugging
+
+Structured `tracing` instrumentation is available across ingestion, retrieval, lessons, personality, consolidation, and store audit inspection.
+
+Developer notes:
+
+- Audit stored provenance with `StoreRepository::inspect_node_audit` and `StoreRepository::inspect_lesson_audit`.
+- Enable `tracing` subscribers in the binary or tests to inspect admission decisions, retrieval scoring, reinforcement, trait updates, and consolidation changes.
+- See [docs/debugging-graph-behavior.md](/home/snakeos/Development/rust/nodamem/docs/debugging-graph-behavior.md) for the recommended debugging workflow.
