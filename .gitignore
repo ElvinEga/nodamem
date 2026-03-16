@@ -1,4 +1,5 @@
 /target/
+/.target-check/
 Cargo.lock
 
 # Local databases and caches
@@ -11,4 +12,3 @@ Cargo.lock
 *.shm
 *.log
 .direnv/
-
