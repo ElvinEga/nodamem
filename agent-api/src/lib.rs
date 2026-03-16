@@ -1,5 +1,10 @@
 //! Agent-facing API scaffolding for Nodamem.
 
+pub use memory_imagination::{
+    ImaginationError, ImaginationPolicy, ImaginationService, PlanningImaginationApi,
+    PlanningImaginationRequest, PlanningImaginationResponse,
+};
+
 use memory_core::CoreMarker;
 use memory_imagination::ImaginationMarker;
 use memory_ingest::IngestMarker;
