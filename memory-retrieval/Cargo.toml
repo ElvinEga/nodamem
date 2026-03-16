@@ -5,9 +5,10 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+chrono = "0.4"
 memory-core = { path = "../memory-core" }
 memory-store = { path = "../memory-store" }
+uuid = "1"
 
 [lints]
 workspace = true
-
