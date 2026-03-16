@@ -633,10 +633,10 @@ mod tests {
 
         let trait_state = TraitState {
             id: TraitId(Uuid::new_v4()),
-            trait_type: TraitType::Reliability,
+            trait_type: TraitType::Practicality,
             status: MemoryStatus::Active,
-            label: "Reliable".to_owned(),
-            description: "Prefers follow-through and consistency.".to_owned(),
+            label: "Practical".to_owned(),
+            description: "Prefers useful and workable outcomes.".to_owned(),
             strength: 0.9,
             confidence: 0.7,
             supporting_lesson_ids: vec![saved_lesson.id],
@@ -654,7 +654,7 @@ mod tests {
             .await
             .expect("trait load should work")
             .expect("trait should exist");
-        assert_eq!(loaded_trait.label, "Reliable");
+        assert_eq!(loaded_trait.label, "Practical");
 
         repository
             .create_checkpoint(&Checkpoint {
