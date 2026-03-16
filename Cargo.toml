@@ -9,6 +9,7 @@ members = [
     "memory-retrieval",
     "memory-sleep",
     "memory-store",
+    "nodamem-app",
 ]
 resolver = "2"
 
