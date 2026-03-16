@@ -41,6 +41,8 @@ use memory_lessons::LessonsMarker;
 use memory_personality::PersonalityMarker;
 use memory_retrieval::RetrievalMarker;
 
+pub mod adapters;
+
 /// Lightweight marker preserved for crate wiring.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentApi {
@@ -271,6 +273,39 @@ pub struct AgentApiService {
     imagination_service: ImaginationService,
 }
 
+/// Internal service interface that adapter layers can depend on without touching transport or storage.
+pub trait AgentMemoryService: Send + Sync {
+    fn recall_context(
+        &self,
+        request: &RecallContextRequest,
+    ) -> Result<RecallContextResponse, AgentApiError>;
+
+    fn get_neighbors(
+        &self,
+        request: &GetNeighborsRequest,
+    ) -> Result<GetNeighborsResponse, AgentApiError>;
+
+    fn propose_memory(
+        &self,
+        request: &ProposeMemoryRequest,
+    ) -> Result<ProposeMemoryResponse, AgentApiError>;
+
+    fn propose_lesson(
+        &self,
+        request: &ProposeLessonRequest,
+    ) -> Result<ProposeLessonResponse, AgentApiError>;
+
+    fn record_outcome(
+        &self,
+        request: &RecordOutcomeRequest,
+    ) -> Result<RecordOutcomeResponse, AgentApiError>;
+
+    fn generate_imagined_scenarios(
+        &self,
+        request: &GenerateImaginedScenariosRequest,
+    ) -> Result<GenerateImaginedScenariosResponse, AgentApiError>;
+}
+
 impl Default for AgentApiService {
     fn default() -> Self {
         Self {
@@ -425,6 +460,50 @@ impl AgentApiService {
     #[must_use]
     pub fn tool_descriptions(&self) -> Vec<AgentToolDescription> {
         tool_descriptions()
+    }
+}
+
+impl AgentMemoryService for AgentApiService {
+    fn recall_context(
+        &self,
+        request: &RecallContextRequest,
+    ) -> Result<RecallContextResponse, AgentApiError> {
+        Self::recall_context(self, request)
+    }
+
+    fn get_neighbors(
+        &self,
+        request: &GetNeighborsRequest,
+    ) -> Result<GetNeighborsResponse, AgentApiError> {
+        Self::get_neighbors(self, request)
+    }
+
+    fn propose_memory(
+        &self,
+        request: &ProposeMemoryRequest,
+    ) -> Result<ProposeMemoryResponse, AgentApiError> {
+        Self::propose_memory(self, request)
+    }
+
+    fn propose_lesson(
+        &self,
+        request: &ProposeLessonRequest,
+    ) -> Result<ProposeLessonResponse, AgentApiError> {
+        Self::propose_lesson(self, request)
+    }
+
+    fn record_outcome(
+        &self,
+        request: &RecordOutcomeRequest,
+    ) -> Result<RecordOutcomeResponse, AgentApiError> {
+        Self::record_outcome(self, request)
+    }
+
+    fn generate_imagined_scenarios(
+        &self,
+        request: &GenerateImaginedScenariosRequest,
+    ) -> Result<GenerateImaginedScenariosResponse, AgentApiError> {
+        Self::generate_imagined_scenarios(self, request)
     }
 }
 
