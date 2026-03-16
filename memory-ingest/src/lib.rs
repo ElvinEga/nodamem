@@ -7,6 +7,7 @@ use memory_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Supported event inputs for the ingestion pipeline.
@@ -133,6 +134,7 @@ impl IngestPipeline {
     }
 
     pub fn ingest(&self, event: &IngestEvent) -> IngestOutput {
+        debug!(event_kind = event_kind(event), "ingesting event into candidate memory objects");
         self.extract(event)
     }
 }
@@ -153,6 +155,16 @@ impl EventExtractor for IngestPipeline {
         all_nodes.append(&mut entity_nodes);
 
         candidate_edges.extend(build_lesson_edges(&all_nodes, &candidate_lessons));
+
+        debug!(
+            event_kind = event_kind(event),
+            candidate_nodes = all_nodes.len(),
+            candidate_edges = candidate_edges.len(),
+            candidate_lessons = candidate_lessons.len(),
+            salience_score,
+            extracted_entities = extracted_entities.len(),
+            "extracted candidate graph objects from event"
+        );
 
         IngestOutput {
             candidate_nodes: all_nodes,
@@ -370,6 +382,51 @@ where
             matched_node_id,
             reason,
         }
+        .tap(|decision| {
+            let duplicate_similarity = duplicate
+                .as_ref()
+                .map(|match_result| match_result.similarity)
+                .unwrap_or_default();
+            info!(
+                candidate_node_id = %candidate.id.0,
+                action = ?decision.action,
+                matched_node_id = ?decision.matched_node_id.map(|id| id.0.to_string()),
+                connectedness = decision.score.connectedness,
+                usefulness = decision.score.usefulness,
+                recurrence = decision.score.recurrence,
+                novelty = decision.score.novelty,
+                importance = decision.score.importance,
+                total = decision.score.total,
+                duplicate_similarity,
+                reason = %decision.reason,
+                "evaluated memory admission candidate"
+            );
+        })
+    }
+}
+
+trait Tap: Sized {
+    fn tap<F>(self, apply: F) -> Self
+    where
+        F: FnOnce(&Self);
+}
+
+impl<T> Tap for T {
+    fn tap<F>(self, apply: F) -> Self
+    where
+        F: FnOnce(&Self),
+    {
+        apply(&self);
+        self
+    }
+}
+
+fn event_kind(event: &IngestEvent) -> &'static str {
+    match event {
+        IngestEvent::UserMessage(_) => "user_message",
+        IngestEvent::AssistantMessage(_) => "assistant_message",
+        IngestEvent::ToolResult(_) => "tool_result",
+        IngestEvent::SystemEvent(_) => "system_event",
     }
 }
 
