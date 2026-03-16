@@ -36,7 +36,8 @@ impl StoreRuntime {
     }
 
     pub async fn smoke_check(&self) -> Result<(), StoreError> {
-        self.connection.execute("SELECT 1", ()).await?;
+        let mut rows = self.connection.query("SELECT 1", ()).await?;
+        let _ = rows.next().await?;
         Ok(())
     }
 
