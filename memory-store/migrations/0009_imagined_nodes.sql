@@ -10,10 +10,14 @@ CREATE TABLE IF NOT EXISTS imagined_nodes (
     title TEXT NOT NULL,
     premise TEXT NOT NULL,
     narrative TEXT NOT NULL,
-    source_node_ids_json TEXT NOT NULL DEFAULT '[]',
-    lesson_ids_json TEXT NOT NULL DEFAULT '[]',
+    basis_source_node_ids_json TEXT NOT NULL DEFAULT '[]',
+    basis_lesson_ids_json TEXT NOT NULL DEFAULT '[]',
+    active_goal_node_ids_json TEXT NOT NULL DEFAULT '[]',
+    trait_snapshot_json TEXT NOT NULL DEFAULT '[]',
     predicted_outcomes_json TEXT NOT NULL DEFAULT '[]',
-    confidence REAL NOT NULL DEFAULT 0.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    plausibility_score REAL NOT NULL DEFAULT 0.0 CHECK (plausibility_score >= 0.0 AND plausibility_score <= 1.0),
+    novelty_score REAL NOT NULL DEFAULT 0.0 CHECK (novelty_score >= 0.0 AND novelty_score <= 1.0),
+    usefulness_score REAL NOT NULL DEFAULT 0.0 CHECK (usefulness_score >= 0.0 AND usefulness_score <= 1.0),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -30,4 +34,3 @@ BEGIN
     SET updated_at = CURRENT_TIMESTAMP
     WHERE id = NEW.id;
 END;
-
