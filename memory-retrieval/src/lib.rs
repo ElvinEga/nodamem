@@ -9,6 +9,7 @@ use memory_core::{
     Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, MemoryPacketId, Node, NodeId, TraitState,
 };
 use memory_store::StoreMarker;
+use tracing::debug;
 use uuid::Uuid;
 
 /// Query input for building a memory packet for an agent.
@@ -169,6 +170,18 @@ where
         let checkpoints = self.source.recent_checkpoints(1)?;
         let traits = self.source.current_traits(1)?;
 
+        debug!(
+            query_terms = split_terms(&query.text).len(),
+            session_id = query.session_id.as_deref().unwrap_or(""),
+            topic = query.topic.as_deref().unwrap_or(""),
+            node_count = nodes.len(),
+            edge_count = edges.len(),
+            lesson_count = lessons.len(),
+            checkpoint_count = checkpoints.len(),
+            trait_count = traits.len(),
+            "retrieval source inputs loaded"
+        );
+
         let ranked_nodes = self.rank_nodes(query, &nodes, &edges);
         let mut core_nodes = ranked_nodes
             .into_iter()
@@ -223,6 +236,14 @@ where
             imagined_scenarios: Vec::new(),
         };
 
+        debug!(
+            core_nodes = packet_core_nodes.len(),
+            neighbors = packet_neighbors.len(),
+            packet_edges = packet.edges.len(),
+            packet_lessons = packet.lessons.len(),
+            "retrieval packet assembled"
+        );
+
         Ok(RetrievedMemoryPacket {
             core_nodes: packet_core_nodes,
             related_neighbors: packet_neighbors,
@@ -254,6 +275,20 @@ where
             .collect::<Vec<_>>();
 
         ranked.sort_by(|left, right| right.score.total.total_cmp(&left.score.total));
+        for ranked_node in ranked.iter().take(5) {
+            debug!(
+                node_id = %ranked_node.node.id.0,
+                title = %ranked_node.node.title,
+                semantic_similarity = ranked_node.score.semantic_similarity,
+                edge_strength = ranked_node.score.edge_strength,
+                importance = ranked_node.score.importance,
+                recency = ranked_node.score.recency,
+                confidence = ranked_node.score.confidence,
+                centrality = ranked_node.score.centrality,
+                total = ranked_node.score.total,
+                "retrieval scoring inputs"
+            );
+        }
         ranked
     }
 }
