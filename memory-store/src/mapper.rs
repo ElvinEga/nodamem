@@ -174,13 +174,14 @@ pub fn format_lesson_type(value: LessonType) -> &'static str {
 
 pub fn format_trait_type(value: TraitType) -> &'static str {
     match value {
-        TraitType::CommunicationStyle => "communication_style",
-        TraitType::PlanningStyle => "planning_style",
-        TraitType::RiskTolerance => "risk_tolerance",
-        TraitType::Creativity => "creativity",
-        TraitType::Reliability => "reliability",
         TraitType::Curiosity => "curiosity",
-        TraitType::Collaboration => "collaboration",
+        TraitType::Caution => "caution",
+        TraitType::Verbosity => "verbosity",
+        TraitType::NoveltySeeking => "novelty_seeking",
+        TraitType::EvidenceReliance => "evidence_reliance",
+        TraitType::Reliability => "reliability",
+        TraitType::Practicality => "practicality",
+        TraitType::Proactivity => "proactivity",
     }
 }
 
@@ -282,13 +283,14 @@ pub fn parse_lesson_type(value: &str) -> Result<LessonType, StoreError> {
 
 pub fn parse_trait_type(value: &str) -> Result<TraitType, StoreError> {
     match value {
-        "communication_style" => Ok(TraitType::CommunicationStyle),
-        "planning_style" => Ok(TraitType::PlanningStyle),
-        "risk_tolerance" => Ok(TraitType::RiskTolerance),
-        "creativity" => Ok(TraitType::Creativity),
-        "reliability" => Ok(TraitType::Reliability),
         "curiosity" => Ok(TraitType::Curiosity),
-        "collaboration" => Ok(TraitType::Collaboration),
+        "caution" => Ok(TraitType::Caution),
+        "verbosity" => Ok(TraitType::Verbosity),
+        "novelty_seeking" => Ok(TraitType::NoveltySeeking),
+        "evidence_reliance" => Ok(TraitType::EvidenceReliance),
+        "reliability" => Ok(TraitType::Reliability),
+        "practicality" => Ok(TraitType::Practicality),
+        "proactivity" => Ok(TraitType::Proactivity),
         _ => Err(StoreError::InvalidValue {
             field: "trait_type",
             value: value.to_owned(),
