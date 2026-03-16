@@ -7,6 +7,7 @@ use memory_core::{
     Checkpoint, CheckpointId, Edge, Lesson, MemoryStatus, Node, NodeId, Timestamp, TraitState,
 };
 use memory_lessons::LessonsMarker;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Lightweight marker preserved for workspace wiring.
@@ -139,7 +140,16 @@ impl SleepScheduler for SleepRunner {
         let reports = self
             .jobs
             .iter()
-            .map(|job| job.run(&mut state, policy, now))
+            .map(|job| {
+                let report = job.run(&mut state, policy, now);
+                debug!(
+                    job_name = report.job_name,
+                    changes = report.changes,
+                    log_entries = report.logs.len(),
+                    "completed consolidation job"
+                );
+                report
+            })
             .collect();
 
         SleepRunResult { state, reports }
@@ -249,6 +259,8 @@ fn run_checkpoint_generation(
         updated_at: now,
     });
 
+    info!(checkpoint_id = %checkpoint_id.0, node_count = state.checkpoints.last().map_or(0, |checkpoint| checkpoint.node_ids.len()), "created consolidation checkpoint");
+
     JobReport {
         job_name: JobKind::CheckpointGeneration.name(),
         changes: 1,
@@ -322,6 +334,12 @@ fn run_duplicate_merging(
             archived.updated_at = now;
             archived_ids.insert(archived_id);
             changes += 1;
+            info!(
+                survivor_node_id = %survivor_id.0,
+                archived_node_id = %archived_id.0,
+                similarity,
+                "merged duplicate nodes during consolidation"
+            );
             logs.push(format!(
                 "archived duplicate node {} into survivor {} with similarity {:.2}",
                 archived_id.0, survivor_id.0, similarity
@@ -354,6 +372,12 @@ fn run_weak_edge_decay(state: &mut SleepState, policy: &SleepPolicy, now: Timest
         edge.weight = (edge.weight - policy.weak_edge_decay).max(0.0);
         edge.updated_at = now;
         changes += 1;
+        debug!(
+            edge_id = %edge.id.0,
+            previous_weight = previous,
+            updated_weight = edge.weight,
+            "decayed weak graph edge during consolidation"
+        );
         logs.push(format!(
             "decayed edge {} from {:.2} to {:.2}",
             edge.id.0, previous, edge.weight
@@ -398,6 +422,7 @@ fn run_archive_isolated_weak_nodes(
         node.status = MemoryStatus::Archived;
         node.updated_at = now;
         changes += 1;
+        info!(node_id = %node.id.0, "archived isolated weak node during consolidation");
         logs.push(format!("archived isolated weak node {}", node.id.0));
     }
 
@@ -444,6 +469,13 @@ fn run_lesson_reinforcement(
         lesson.status = MemoryStatus::Reinforced;
         lesson.updated_at = now;
         changes += 1;
+        info!(
+            lesson_id = %lesson.id.0,
+            support_count,
+            reinforcement_count = lesson.reinforcement_count,
+            confidence = lesson.confidence,
+            "reinforced lesson during consolidation"
+        );
         logs.push(format!(
             "reinforced lesson {} with {} active supporting nodes",
             lesson.id.0, support_count
@@ -481,6 +513,13 @@ fn run_reconsolidation(state: &mut SleepState, policy: &SleepPolicy, now: Timest
         node.last_accessed_at = Some(now);
         node.updated_at = now;
         changes += 1;
+        info!(
+            node_id = %node.id.0,
+            recall_count,
+            confidence = node.confidence,
+            importance = node.importance,
+            "reconsolidated frequently recalled node"
+        );
         logs.push(format!(
             "reconsolidated node {} after {} recalls",
             node.id.0, recall_count
