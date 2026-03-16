@@ -2,6 +2,7 @@
 
 use memory_core::CoreMarker;
 
+pub mod audit;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -9,6 +10,7 @@ pub mod mapper;
 pub mod migrations;
 pub mod repository;
 
+pub use audit::{LessonAuditTrail, NodeAuditTrail};
 pub use config::StoreConfig;
 pub use db::{open_database, StoreRuntime};
 pub use error::StoreError;
