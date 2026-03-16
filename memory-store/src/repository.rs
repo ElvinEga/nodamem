@@ -2,16 +2,18 @@
 
 use libsql::{params, Connection};
 use memory_core::{
-    Checkpoint, Edge, Lesson, LessonId, Node, NodeId, TraitId, TraitState, WorkingMemoryEntry,
+    Checkpoint, Edge, ImaginedScenario, Lesson, LessonId, Node, NodeId, ScenarioId, TraitId,
+    TraitState, WorkingMemoryEntry,
 };
 use uuid::Uuid;
 
 use crate::error::StoreError;
 use crate::mapper::{
     format_edge_type, format_lesson_type, format_memory_status, format_node_type,
-    format_optional_timestamp, format_timestamp, format_trait_type, lesson_id_strings,
-    map_checkpoint, map_edge, map_lesson, map_node, map_trait_state, map_working_memory_entry,
-    node_id_strings, payload_to_json, to_json, trait_id_strings,
+    format_imagination_status, format_optional_timestamp, format_timestamp, format_trait_type,
+    lesson_id_strings, map_checkpoint, map_edge, map_imagined_scenario, map_lesson, map_node,
+    map_trait_state, map_working_memory_entry, node_id_strings, payload_to_json, to_json,
+    trait_id_strings,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -361,6 +363,105 @@ impl<'a> StoreRepository<'a> {
         Ok(checkpoints)
     }
 
+    pub async fn upsert_imagined_scenario(
+        &self,
+        scenario: &ImaginedScenario,
+    ) -> Result<ImaginedScenario, StoreError> {
+        self.connection
+            .execute(
+                "INSERT INTO imagined_nodes (
+                    id, status, title, premise, narrative, basis_source_node_ids_json,
+                    basis_lesson_ids_json, active_goal_node_ids_json, trait_snapshot_json,
+                    predicted_outcomes_json, plausibility_score, novelty_score, usefulness_score,
+                    created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 ON CONFLICT(id) DO UPDATE SET
+                    status = excluded.status,
+                    title = excluded.title,
+                    premise = excluded.premise,
+                    narrative = excluded.narrative,
+                    basis_source_node_ids_json = excluded.basis_source_node_ids_json,
+                    basis_lesson_ids_json = excluded.basis_lesson_ids_json,
+                    active_goal_node_ids_json = excluded.active_goal_node_ids_json,
+                    trait_snapshot_json = excluded.trait_snapshot_json,
+                    predicted_outcomes_json = excluded.predicted_outcomes_json,
+                    plausibility_score = excluded.plausibility_score,
+                    novelty_score = excluded.novelty_score,
+                    usefulness_score = excluded.usefulness_score",
+                params![
+                    scenario.id.0.to_string(),
+                    format_imagination_status(scenario.status),
+                    scenario.title.clone(),
+                    scenario.premise.clone(),
+                    scenario.narrative.clone(),
+                    to_json(&node_id_strings(&scenario.basis_source_node_ids))?,
+                    to_json(&lesson_id_strings(&scenario.basis_lesson_ids))?,
+                    to_json(&node_id_strings(&scenario.active_goal_node_ids))?,
+                    to_json(&scenario.trait_snapshot)?,
+                    to_json(&scenario.predicted_outcomes)?,
+                    f64::from(scenario.plausibility_score),
+                    f64::from(scenario.novelty_score),
+                    f64::from(scenario.usefulness_score),
+                    format_timestamp(scenario.created_at),
+                    format_timestamp(scenario.updated_at),
+                ],
+            )
+            .await?;
+
+        self.load_imagined_scenario(scenario.id)
+            .await?
+            .ok_or_else(|| missing_row("imagined_nodes", scenario.id.0))
+    }
+
+    pub async fn load_imagined_scenario(
+        &self,
+        scenario_id: ScenarioId,
+    ) -> Result<Option<ImaginedScenario>, StoreError> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, status, title, premise, narrative, basis_source_node_ids_json,
+                        basis_lesson_ids_json, active_goal_node_ids_json, trait_snapshot_json,
+                        predicted_outcomes_json, plausibility_score, novelty_score, usefulness_score,
+                        created_at, updated_at
+                 FROM imagined_nodes
+                 WHERE id = ?1",
+                params![scenario_id.0.to_string()],
+            )
+            .await?;
+
+        rows.next()
+            .await?
+            .map(|row| map_imagined_scenario(&row))
+            .transpose()
+    }
+
+    pub async fn list_imagined_scenarios(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<ImaginedScenario>, StoreError> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, status, title, premise, narrative, basis_source_node_ids_json,
+                        basis_lesson_ids_json, active_goal_node_ids_json, trait_snapshot_json,
+                        predicted_outcomes_json, plausibility_score, novelty_score, usefulness_score,
+                        created_at, updated_at
+                 FROM imagined_nodes
+                 ORDER BY updated_at DESC
+                 LIMIT ?1",
+                params![i64::from(limit)],
+            )
+            .await?;
+
+        let mut scenarios = Vec::new();
+        while let Some(row) = rows.next().await? {
+            scenarios.push(map_imagined_scenario(&row)?);
+        }
+
+        Ok(scenarios)
+    }
+
     pub async fn upsert_working_memory_entry(
         &self,
         entry: &WorkingMemoryEntry,
@@ -529,9 +630,9 @@ fn missing_row(kind: &'static str, id: Uuid) -> StoreError {
 mod tests {
     use chrono::Utc;
     use memory_core::{
-        Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, Lesson, LessonId, LessonType,
-        MemoryStatus, Node, NodeId, NodeType, TraitId, TraitState, TraitType, WorkingMemoryEntry,
-        WorkingMemoryId,
+        Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, ImaginedScenario, ImaginationStatus,
+        Lesson, LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType, ScenarioId, TraitId,
+        TraitState, TraitType, WorkingMemoryEntry, WorkingMemoryId,
     };
     use serde_json::json;
     use uuid::Uuid;
@@ -711,6 +812,74 @@ mod tests {
             .await
             .expect("working memory delete should work");
         assert!(deleted);
+    }
+
+    #[tokio::test]
+    async fn persists_imagined_scenarios_separately_from_verified_nodes() {
+        let runtime = open_test_runtime().await;
+        let repository = StoreRepository::new(&runtime.connection);
+
+        let basis_node = repository
+            .insert_node(&sample_node("basis", NodeType::Semantic))
+            .await
+            .expect("basis node insert should work");
+        let goal_node = repository
+            .insert_node(&sample_node("goal", NodeType::Goal))
+            .await
+            .expect("goal node insert should work");
+
+        let scenario = ImaginedScenario {
+            id: ScenarioId(Uuid::new_v4()),
+            status: ImaginationStatus::Proposed,
+            title: "Hypothetical plan".to_owned(),
+            premise: "If the agent reuses the basis memory cluster, planning may accelerate."
+                .to_owned(),
+            narrative: "This scenario is hypothetical and should not be treated as verified memory."
+                .to_owned(),
+            basis_source_node_ids: vec![basis_node.id],
+            basis_lesson_ids: Vec::new(),
+            active_goal_node_ids: vec![goal_node.id],
+            trait_snapshot: vec![TraitState {
+                id: TraitId(Uuid::new_v4()),
+                trait_type: TraitType::Practicality,
+                status: MemoryStatus::Active,
+                label: "Practical".to_owned(),
+                description: "Optimizes for useful outcomes.".to_owned(),
+                strength: 0.8,
+                confidence: 0.7,
+                supporting_lesson_ids: Vec::new(),
+                supporting_node_ids: vec![basis_node.id],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }],
+            predicted_outcomes: vec!["Planning finishes with fewer revisions.".to_owned()],
+            plausibility_score: 0.74,
+            novelty_score: 0.51,
+            usefulness_score: 0.82,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let saved = repository
+            .upsert_imagined_scenario(&scenario)
+            .await
+            .expect("imagined scenario upsert should work");
+        let listed = repository
+            .list_imagined_scenarios(10)
+            .await
+            .expect("imagined scenario list should work");
+
+        assert_eq!(saved.status, ImaginationStatus::Proposed);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].basis_source_node_ids, vec![basis_node.id]);
+        assert!(
+            repository
+                .get_node_by_id(NodeId(saved.id.0))
+                .await
+                .expect("verified node lookup should work")
+                .is_none(),
+            "imagined scenarios must not appear in verified node storage"
+        );
     }
 
     async fn open_test_runtime() -> StoreRuntime {
