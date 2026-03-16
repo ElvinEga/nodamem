@@ -11,7 +11,7 @@ pub mod migrations;
 pub mod repository;
 
 pub use audit::{LessonAuditTrail, NodeAuditTrail};
-pub use config::StoreConfig;
+pub use config::{StoreConfig, TursoSyncConfig};
 pub use db::{open_database, StoreRuntime};
 pub use error::StoreError;
 pub use migrations::run_migrations;
