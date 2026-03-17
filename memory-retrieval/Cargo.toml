@@ -8,6 +8,7 @@ version.workspace = true
 chrono = "0.4"
 memory-core = { path = "../memory-core" }
 memory-store = { path = "../memory-store" }
+tantivy = "0.22"
 tracing = "0.1"
 uuid = "1"
 
