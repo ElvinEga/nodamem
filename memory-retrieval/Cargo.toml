@@ -6,11 +6,17 @@ version.workspace = true
 
 [dependencies]
 chrono = "0.4"
+libsql = "0.9"
 memory-core = { path = "../memory-core" }
 memory-store = { path = "../memory-store" }
+serde_json = "1"
 tantivy = "0.22"
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 tracing = "0.1"
 uuid = "1"
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true
