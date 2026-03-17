@@ -15,7 +15,7 @@ pub use config::{StoreConfig, TursoSyncConfig};
 pub use db::{open_database, StoreRuntime};
 pub use error::StoreError;
 pub use migrations::run_migrations;
-pub use repository::{LessonSourceRole, StoreRepository};
+pub use repository::{LessonSourceRole, NodeEmbeddingRecord, StoreRepository, VectorSearchMatch};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StoreMarker {
