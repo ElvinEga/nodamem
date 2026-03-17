@@ -27,7 +27,7 @@ use memory_lessons::{
 };
 use memory_personality::{OutcomeRecord, PersonalityService, TraitUpdate};
 use memory_retrieval::{
-    LexicalFallbackRetriever, MemoryQuery, RetrievalEngine, RetrievalError, RetrievalPolicy,
+    vector::NullVectorSearch, MemoryQuery, RetrievalEngine, RetrievalError, RetrievalPolicy,
     RetrievalSource,
 };
 use memory_sleep::SleepMarker;
@@ -341,7 +341,7 @@ impl AgentApiService {
             checkpoints: request.checkpoints.clone(),
             traits: request.traits.clone(),
         };
-        let engine = RetrievalEngine::new(source, LexicalFallbackRetriever, RetrievalPolicy::default());
+        let engine = RetrievalEngine::new(source, NullVectorSearch, RetrievalPolicy::default());
         let retrieved = engine.recall_context(&MemoryQuery {
             text: request.text.clone(),
             session_id: request.session_id.clone(),
