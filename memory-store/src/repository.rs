@@ -5,6 +5,7 @@ use memory_core::{
     Checkpoint, Edge, ImaginedScenario, Lesson, LessonId, Node, NodeId, ScenarioId, TraitId,
     TraitState, WorkingMemoryEntry,
 };
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 use uuid::Uuid;
 
@@ -22,6 +23,19 @@ use crate::mapper::{
 pub enum LessonSourceRole {
     Supporting,
     Contradicting,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeEmbeddingRecord {
+    pub node_id: NodeId,
+    pub embedding_model: String,
+    pub embedding: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorSearchMatch {
+    pub node_id: NodeId,
+    pub similarity_score: f32,
 }
 
 impl LessonSourceRole {
@@ -182,6 +196,67 @@ impl<'a> StoreRepository<'a> {
         }
 
         Ok(nodes)
+    }
+
+    pub async fn upsert_node_embedding(
+        &self,
+        record: &NodeEmbeddingRecord,
+    ) -> Result<NodeEmbeddingRecord, StoreError> {
+        let embedding_json = serde_json::to_string(&record.embedding)?;
+        self.connection
+            .execute(
+                "INSERT INTO node_embeddings (
+                    node_id, embedding_model, embedding_dimensions, embedding
+                 ) VALUES (?1, ?2, ?3, vector(?4))
+                 ON CONFLICT(node_id) DO UPDATE SET
+                    embedding_model = excluded.embedding_model,
+                    embedding_dimensions = excluded.embedding_dimensions,
+                    embedding = excluded.embedding",
+                params![
+                    record.node_id.0.to_string(),
+                    record.embedding_model.clone(),
+                    record.embedding.len() as i64,
+                    embedding_json,
+                ],
+            )
+            .await?;
+
+        Ok(record.clone())
+    }
+
+    pub async fn search_node_embeddings(
+        &self,
+        query_embedding: &[f32],
+        embedding_model: &str,
+        limit: u32,
+    ) -> Result<Vec<VectorSearchMatch>, StoreError> {
+        if query_embedding.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let embedding_json = serde_json::to_string(query_embedding)?;
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT node_id,
+                        MAX(0.0, 1.0 - CAST(vector_distance_cos(embedding, vector(?1)) AS REAL))
+                 FROM node_embeddings
+                 WHERE embedding_model = ?2
+                 ORDER BY vector_distance_cos(embedding, vector(?1)) ASC
+                 LIMIT ?3",
+                params![embedding_json, embedding_model, i64::from(limit)],
+            )
+            .await?;
+
+        let mut matches = Vec::new();
+        while let Some(row) = rows.next().await? {
+            matches.push(VectorSearchMatch {
+                node_id: NodeId(Uuid::parse_str(&row.get::<String>(0)?)?),
+                similarity_score: row.get::<f64>(1)? as f32,
+            });
+        }
+
+        Ok(matches)
     }
 
     pub async fn upsert_lesson(&self, lesson: &Lesson) -> Result<Lesson, StoreError> {
