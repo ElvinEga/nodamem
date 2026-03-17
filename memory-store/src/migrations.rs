@@ -67,6 +67,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "working_memory",
         sql: include_str!("../migrations/0010_working_memory.sql"),
     },
+    Migration {
+        version: "0011",
+        name: "node_embeddings",
+        sql: include_str!("../migrations/0011_node_embeddings.sql"),
+    },
 ];
 
 pub async fn run_migrations(connection: &Connection) -> Result<(), StoreError> {
