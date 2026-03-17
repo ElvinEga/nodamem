@@ -96,6 +96,7 @@ impl Default for RetrievalPolicy {
 pub enum RetrievalError {
     Source(String),
     Lexical(String),
+    Vector(String),
 }
 
 impl fmt::Display for RetrievalError {
@@ -103,6 +104,7 @@ impl fmt::Display for RetrievalError {
         match self {
             Self::Source(message) => write!(formatter, "retrieval source error: {message}"),
             Self::Lexical(message) => write!(formatter, "lexical retrieval error: {message}"),
+            Self::Vector(message) => write!(formatter, "vector retrieval error: {message}"),
         }
     }
 }
@@ -257,16 +259,23 @@ pub struct RetrievalMarker {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::future::Future;
+
     use chrono::{Duration, Utc};
     use memory_core::{
         Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, Lesson, LessonId, LessonType,
         MemoryStatus, Node, NodeId, NodeType, TraitId, TraitState, TraitType,
     };
+    use memory_store::{NodeEmbeddingRecord, StoreConfig, StoreRuntime};
+    use tempfile::tempdir;
     use uuid::Uuid;
 
     use super::lexical::{LexicalSearch, TantivyLexicalIndex};
     use super::rerank::{merge_and_rank, HybridWeights};
-    use super::vector::{VectorCandidate, VectorSearch};
+    use super::vector::{
+        EmbeddedQuery, QueryEmbeddingProvider, TursoVectorSearch, VectorCandidate, VectorSearch,
+    };
     use super::{MemoryQuery, RetrievalEngine, RetrievalError, RetrievalPolicy, RetrievalSource};
 
     #[derive(Debug, Clone)]
@@ -316,6 +325,20 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct TestQueryEmbedder {
+        embeddings: HashMap<String, EmbeddedQuery>,
+    }
+
+    impl QueryEmbeddingProvider for TestQueryEmbedder {
+        fn embed_query(&self, query: &MemoryQuery) -> Result<EmbeddedQuery, RetrievalError> {
+            self.embeddings
+                .get(&query.text)
+                .cloned()
+                .ok_or_else(|| RetrievalError::Vector(format!("missing embedding for {}", query.text)))
+        }
+    }
+
     #[test]
     fn bm25_search_returns_exact_keyword_matches() {
         let source = sample_source();
@@ -352,6 +375,65 @@ mod tests {
     }
 
     #[test]
+    fn real_vector_search_finds_semantic_match_without_exact_keywords() {
+        let source = sample_source();
+        let runtime = build_vector_store(&source.nodes, &sample_embeddings());
+        let vector_search = sample_turso_vector_search(&runtime.database);
+
+        let hits = vector_search
+            .search(
+                &MemoryQuery {
+                    text: "deployment playbook".to_owned(),
+                    session_id: None,
+                    topic: Some("release".to_owned()),
+                },
+                &source.nodes,
+                3,
+            )
+            .expect("vector search should succeed");
+
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].node_id, source.nodes[0].id);
+        assert!(hits[0].vector_similarity_score > 0.9);
+    }
+
+    #[test]
+    fn real_vector_results_merge_with_lexical_candidates() {
+        let source = sample_source();
+        let runtime = build_vector_store(&source.nodes, &sample_embeddings());
+        let vector_search = sample_turso_vector_search(&runtime.database);
+        let index = TantivyLexicalIndex::from_nodes(&source.nodes).expect("index build should work");
+        let lexical_hits = index.search("architecture", 5).expect("lexical search should work");
+        let vector_hits = vector_search
+            .search(
+                &MemoryQuery {
+                    text: "system design".to_owned(),
+                    session_id: None,
+                    topic: Some("architecture".to_owned()),
+                },
+                &source.nodes,
+                5,
+            )
+            .expect("vector search should succeed");
+
+        let ranked = merge_and_rank(
+            &source.nodes,
+            &source.edges,
+            &lexical_hits,
+            &vector_hits,
+            &[],
+            &HybridWeights::default(),
+        );
+
+        let unique_ids = ranked
+            .iter()
+            .map(|candidate| candidate.node.id)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ranked.len(), unique_ids.len());
+        assert!(ranked.iter().any(|candidate| candidate.node.id == source.nodes[1].id));
+    }
+
+    #[test]
     fn reranking_prefers_good_combined_result_over_weak_single_signal_result() {
         let source = sample_source();
         let lexical_hits = vec![
@@ -381,6 +463,27 @@ mod tests {
         );
 
         assert_eq!(ranked[0].node.id, source.nodes[1].id);
+    }
+
+    #[test]
+    fn final_reranking_uses_real_vector_results_in_hybrid_flow() {
+        let source = sample_source();
+        let runtime = build_vector_store(&source.nodes, &sample_embeddings());
+        let engine = RetrievalEngine::new(
+            source.clone(),
+            sample_turso_vector_search(&runtime.database),
+            RetrievalPolicy::default(),
+        );
+
+        let packet = engine
+            .recall_context(&MemoryQuery {
+                text: "system design architecture".to_owned(),
+                session_id: Some("session-2".to_owned()),
+                topic: Some("planning".to_owned()),
+            })
+            .expect("hybrid retrieval should succeed");
+
+        assert_eq!(packet.core_nodes[0].id, source.nodes[1].id);
     }
 
     #[test]
@@ -559,5 +662,92 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    fn build_vector_store(
+        nodes: &[Node],
+        embeddings: &HashMap<String, Vec<f32>>,
+    ) -> StoreRuntime {
+        let tempdir = tempdir().expect("temporary directory should be created");
+        let db_dir = tempdir.path().to_path_buf();
+        std::mem::forget(tempdir);
+        let config = StoreConfig {
+            local_database_path: db_dir.join("retrieval-vectors.db"),
+            ..StoreConfig::default()
+        };
+
+        let runtime = run_async(StoreRuntime::open(config)).expect("store should open");
+        let repository = runtime.repository();
+        run_async(async {
+            for node in nodes {
+                repository.insert_node(node).await?;
+                if let Some(embedding) = embeddings.get(&node.title) {
+                    repository
+                        .upsert_node_embedding(&NodeEmbeddingRecord {
+                            node_id: node.id,
+                            embedding_model: "test-model".to_owned(),
+                            embedding: embedding.clone(),
+                        })
+                        .await?;
+                }
+            }
+
+            Result::<(), memory_store::StoreError>::Ok(())
+        })
+        .expect("nodes and embeddings should persist");
+
+        runtime
+    }
+
+    fn sample_turso_vector_search(database: &libsql::Database) -> TursoVectorSearch<TestQueryEmbedder> {
+        TursoVectorSearch::new(
+            database.connect().expect("vector search connection should open"),
+            TestQueryEmbedder {
+                embeddings: HashMap::from([
+                    (
+                        "deployment playbook".to_owned(),
+                        EmbeddedQuery {
+                            embedding_model: "test-model".to_owned(),
+                            embedding: vec![1.0, 0.0, 0.0],
+                        },
+                    ),
+                    (
+                        "system design".to_owned(),
+                        EmbeddedQuery {
+                            embedding_model: "test-model".to_owned(),
+                            embedding: vec![0.75, 0.65, 0.0],
+                        },
+                    ),
+                    (
+                        "system design architecture".to_owned(),
+                        EmbeddedQuery {
+                            embedding_model: "test-model".to_owned(),
+                            embedding: vec![0.7, 0.7, 0.0],
+                        },
+                    ),
+                ]),
+            },
+        )
+    }
+
+    fn sample_embeddings() -> HashMap<String, Vec<f32>> {
+        HashMap::from([
+            ("migration rollout notes".to_owned(), vec![1.0, 0.0, 0.0]),
+            ("architecture review".to_owned(), vec![0.75, 0.65, 0.0]),
+            ("release planning".to_owned(), vec![0.85, 0.2, 0.0]),
+            ("Turso embedded".to_owned(), vec![0.1, 0.95, 0.0]),
+            ("OpenClaw adapter".to_owned(), vec![0.0, 0.1, 1.0]),
+        ])
+    }
+
+    fn run_async<F>(future: F) -> F::Output
+    where
+        F: Future,
+    {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime should be created")
+            .block_on(future)
     }
 }
