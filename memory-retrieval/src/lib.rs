@@ -1,16 +1,32 @@
-//! Agent-friendly memory retrieval with pluggable ranking and vector lookup interfaces.
+//! Hybrid memory retrieval for Nodamem.
+//!
+//! Developer notes:
+//! - Turso/libSQL remains the source of truth for nodes, edges, and embeddings.
+//! - Tantivy acts as the local lexical retrieval layer and can be maintained incrementally through
+//!   [`lexical::IndexedStoreRepository`] or rebuilt from source nodes when the app cold-starts.
+//! - Hybrid retrieval combines lexical BM25, vector similarity, graph expansion, and weighted
+//!   reranking before assembling a compact memory packet.
 
-use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fmt;
 
-use chrono::{Duration, Utc};
 use memory_core::{
-    Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, MemoryPacketId, Node, NodeId, TraitState,
+    Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, Node, NodeId, TraitState,
 };
 use memory_store::StoreMarker;
 use tracing::debug;
-use uuid::Uuid;
+
+pub mod graph;
+pub mod lexical;
+pub mod packet;
+pub mod rerank;
+pub mod vector;
+
+use graph::{GraphExpansionConfig, GraphExpander};
+use lexical::{LexicalCandidate, LexicalSearch, TantivyLexicalIndex};
+use packet::assemble_memory_packet;
+use rerank::{merge_and_rank, HybridWeights};
+use vector::{NullVectorSearch, VectorCandidate, VectorSearch};
 
 /// Query input for building a memory packet for an agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,46 +36,20 @@ pub struct MemoryQuery {
     pub topic: Option<String>,
 }
 
-/// Ranking breakdown used during retrieval scoring.
+/// Weighted scoring breakdown after lexical, vector, graph, and node metadata are merged.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetrievalScoreBreakdown {
-    pub semantic_similarity: f32,
+    pub lexical_score: f32,
+    pub vector_score: f32,
     pub edge_strength: f32,
-    pub importance: f32,
     pub recency: f32,
+    pub importance: f32,
     pub confidence: f32,
     pub centrality: f32,
     pub total: f32,
 }
 
-/// Retrieval policy controlling packet sizes and score cutoffs.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RetrievalPolicy {
-    pub core_node_limit: usize,
-    pub neighbor_limit: usize,
-    pub lesson_limit: usize,
-    pub min_score: f32,
-}
-
-impl Default for RetrievalPolicy {
-    fn default() -> Self {
-        Self {
-            core_node_limit: 3,
-            neighbor_limit: 2,
-            lesson_limit: 2,
-            min_score: 0.2,
-        }
-    }
-}
-
-/// Internal ranked node candidate used while building packets.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RankedNode {
-    pub node: Node,
-    pub score: RetrievalScoreBreakdown,
-}
-
-/// Agent-facing retrieval response with explicit slices for core context and neighborhood context.
+/// Agent-facing retrieval response with compact verified context.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetrievedMemoryPacket {
     pub core_nodes: Vec<Node>,
@@ -70,21 +60,66 @@ pub struct RetrievedMemoryPacket {
     pub packet: MemoryPacket,
 }
 
+/// Retrieval policy controlling search limits and weighted reranking.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetrievalPolicy {
+    pub core_node_limit: usize,
+    pub neighbor_limit: usize,
+    pub lesson_limit: usize,
+    pub lexical_limit: usize,
+    pub vector_limit: usize,
+    pub min_score: f32,
+    pub graph: GraphExpansionConfig,
+    pub weights: HybridWeights,
+}
+
+impl Default for RetrievalPolicy {
+    fn default() -> Self {
+        Self {
+            core_node_limit: 3,
+            neighbor_limit: 2,
+            lesson_limit: 2,
+            lexical_limit: 8,
+            vector_limit: 8,
+            min_score: 0.2,
+            graph: GraphExpansionConfig {
+                max_hops: 1,
+                max_candidates: 12,
+            },
+            weights: HybridWeights::default(),
+        }
+    }
+}
+
 /// Retrieval errors.
 #[derive(Debug)]
 pub enum RetrievalError {
     Source(String),
+    Lexical(String),
 }
 
 impl fmt::Display for RetrievalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Source(message) => write!(formatter, "retrieval source error: {message}"),
+            Self::Lexical(message) => write!(formatter, "lexical retrieval error: {message}"),
         }
     }
 }
 
 impl StdError for RetrievalError {}
+
+impl From<tantivy::TantivyError> for RetrievalError {
+    fn from(error: tantivy::TantivyError) -> Self {
+        Self::Lexical(error.to_string())
+    }
+}
+
+impl From<memory_store::StoreError> for RetrievalError {
+    fn from(error: memory_store::StoreError) -> Self {
+        Self::Source(error.to_string())
+    }
+}
 
 /// Storage-agnostic retrieval source.
 pub trait RetrievalSource {
@@ -95,70 +130,36 @@ pub trait RetrievalSource {
     fn current_traits(&self, limit: usize) -> Result<Vec<TraitState>, RetrievalError>;
 }
 
-/// Interface for future vector-backed retrieval.
-pub trait VectorRetriever {
-    fn retrieve(&self, query: &MemoryQuery, nodes: &[Node]) -> Vec<(NodeId, f32)>;
-}
-
-/// Temporary lexical fallback until vector search is wired in.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct LexicalFallbackRetriever;
-
-impl VectorRetriever for LexicalFallbackRetriever {
-    fn retrieve(&self, query: &MemoryQuery, nodes: &[Node]) -> Vec<(NodeId, f32)> {
-        let query_terms = split_terms(&query.text);
-
-        nodes
-            .iter()
-            .filter_map(|node| {
-                let node_terms = node_terms(node);
-                if query_terms.is_empty() || node_terms.is_empty() {
-                    return None;
-                }
-
-                let overlap = query_terms
-                    .iter()
-                    .filter(|term| node_terms.contains(*term))
-                    .count() as f32;
-                let denominator = query_terms.len().max(node_terms.len()) as f32;
-                let score = (overlap / denominator).clamp(0.0, 1.0);
-
-                (score > 0.0).then_some((node.id, score))
-            })
-            .collect()
-    }
-}
-
-/// Retrieval engine that ranks nodes, expands the graph neighborhood, and builds a memory packet.
+/// Retrieval engine that combines lexical BM25, vector retrieval, graph expansion, and reranking.
 #[derive(Debug, Clone)]
 pub struct RetrievalEngine<S, V> {
     source: S,
-    vector_retriever: V,
+    vector_search: V,
     policy: RetrievalPolicy,
 }
 
 impl<S, V> RetrievalEngine<S, V> {
     #[must_use]
-    pub fn new(source: S, vector_retriever: V, policy: RetrievalPolicy) -> Self {
+    pub fn new(source: S, vector_search: V, policy: RetrievalPolicy) -> Self {
         Self {
             source,
-            vector_retriever,
+            vector_search,
             policy,
         }
     }
 }
 
-impl<S> RetrievalEngine<S, LexicalFallbackRetriever> {
+impl<S> RetrievalEngine<S, NullVectorSearch> {
     #[must_use]
-    pub fn with_fallback(source: S) -> Self {
-        Self::new(source, LexicalFallbackRetriever, RetrievalPolicy::default())
+    pub fn with_hybrid_defaults(source: S) -> Self {
+        Self::new(source, NullVectorSearch, RetrievalPolicy::default())
     }
 }
 
 impl<S, V> RetrievalEngine<S, V>
 where
     S: RetrievalSource,
-    V: VectorRetriever,
+    V: VectorSearch,
 {
     pub fn recall_context(
         &self,
@@ -171,9 +172,7 @@ where
         let traits = self.source.current_traits(1)?;
 
         debug!(
-            query_terms = split_terms(&query.text).len(),
-            session_id = query.session_id.as_deref().unwrap_or(""),
-            topic = query.topic.as_deref().unwrap_or(""),
+            query_terms = query.text.split_whitespace().count(),
             node_count = nodes.len(),
             edge_count = edges.len(),
             lesson_count = lessons.len(),
@@ -182,281 +181,70 @@ where
             "retrieval source inputs loaded"
         );
 
-        let ranked_nodes = self.rank_nodes(query, &nodes, &edges);
-        let mut core_nodes = ranked_nodes
-            .into_iter()
-            .filter(|ranked| ranked.score.total >= self.policy.min_score)
-            .take(self.policy.core_node_limit.clamp(3, 5))
-            .map(|ranked| ranked.node)
-            .collect::<Vec<_>>();
+        let lexical_index = TantivyLexicalIndex::from_nodes(&nodes)?;
+        let lexical_hits = lexical_index.search(&query.text, self.policy.lexical_limit)?;
+        let vector_hits = self
+            .vector_search
+            .search(query, &nodes, self.policy.vector_limit)?;
 
-        if core_nodes.len() < 3 {
-            let fallback_ranked = self.rank_nodes(query, &nodes, &edges);
-            for ranked in fallback_ranked {
-                if core_nodes.iter().any(|node| node.id == ranked.node.id) {
-                    continue;
-                }
-                core_nodes.push(ranked.node);
-                if core_nodes.len() == 3 {
-                    break;
-                }
-            }
-        }
+        debug!(lexical_hits = lexical_hits.len(), "lexical hits collected");
+        debug!(vector_hits = vector_hits.len(), "vector hits collected");
 
-        let neighbors = expand_neighbors(
-            &core_nodes,
-            &nodes,
-            &edges,
-            self.policy.neighbor_limit.clamp(2, 3),
-        );
-        let selected_node_ids = collect_node_ids(&core_nodes, &neighbors);
-        let packet_edges = select_edges(&edges, &selected_node_ids);
-        let packet_lessons = select_lessons(
-            &lessons,
-            &selected_node_ids,
-            self.policy.lesson_limit.clamp(1, 2),
-        );
-        let checkpoint_summary = checkpoints.into_iter().next();
-        let trait_snapshot = traits.into_iter().next();
-
-        let packet_core_nodes = core_nodes;
-        let packet_neighbors = neighbors;
-        let mut packet_nodes = packet_core_nodes.clone();
-        packet_nodes.extend(packet_neighbors.clone());
-
-        let packet = MemoryPacket {
-            id: MemoryPacketId(Uuid::new_v4()),
-            request_id: query.session_id.clone(),
-            created_at: Utc::now(),
-            nodes: packet_nodes.clone(),
-            edges: packet_edges,
-            lessons: packet_lessons.clone(),
-            traits: trait_snapshot.iter().cloned().collect(),
-            checkpoints: checkpoint_summary.iter().cloned().collect(),
-            imagined_scenarios: Vec::new(),
-        };
+        let seed_ids = seed_node_ids(&lexical_hits, &vector_hits);
+        let neighbor_hits =
+            GraphExpander::new(self.policy.graph).expand(&seed_ids, &nodes, &edges);
 
         debug!(
-            core_nodes = packet_core_nodes.len(),
-            neighbors = packet_neighbors.len(),
-            packet_edges = packet.edges.len(),
-            packet_lessons = packet.lessons.len(),
-            "retrieval packet assembled"
+            merged_seed_ids = seed_ids.len(),
+            neighbor_hits = neighbor_hits.len(),
+            "graph expansion completed"
         );
 
-        Ok(RetrievedMemoryPacket {
-            core_nodes: packet_core_nodes,
-            related_neighbors: packet_neighbors,
-            lessons: packet_lessons,
-            checkpoint_summary,
-            trait_snapshot,
-            packet,
-        })
-    }
+        let ranked = merge_and_rank(
+            &nodes,
+            &edges,
+            &lexical_hits,
+            &vector_hits,
+            &neighbor_hits,
+            &self.policy.weights,
+        );
 
-    fn rank_nodes(&self, query: &MemoryQuery, nodes: &[Node], edges: &[Edge]) -> Vec<RankedNode> {
-        let semantic_scores = self
-            .vector_retriever
-            .retrieve(query, nodes)
-            .into_iter()
-            .collect::<HashMap<_, _>>();
-
-        let mut ranked = nodes
-            .iter()
-            .cloned()
-            .map(|node| RankedNode {
-                score: build_score_breakdown(
-                    &node,
-                    semantic_scores.get(&node.id).copied().unwrap_or_default(),
-                    edges,
-                ),
-                node,
-            })
-            .collect::<Vec<_>>();
-
-        ranked.sort_by(|left, right| right.score.total.total_cmp(&left.score.total));
-        for ranked_node in ranked.iter().take(5) {
+        for candidate in ranked.iter().take(5) {
             debug!(
-                node_id = %ranked_node.node.id.0,
-                title = %ranked_node.node.title,
-                semantic_similarity = ranked_node.score.semantic_similarity,
-                edge_strength = ranked_node.score.edge_strength,
-                importance = ranked_node.score.importance,
-                recency = ranked_node.score.recency,
-                confidence = ranked_node.score.confidence,
-                centrality = ranked_node.score.centrality,
-                total = ranked_node.score.total,
-                "retrieval scoring inputs"
+                node_id = %candidate.node.id.0,
+                lexical_score = candidate.score.lexical_score,
+                vector_score = candidate.score.vector_score,
+                edge_strength = candidate.score.edge_strength,
+                recency = candidate.score.recency,
+                importance = candidate.score.importance,
+                confidence = candidate.score.confidence,
+                centrality = candidate.score.centrality,
+                total = candidate.score.total,
+                "hybrid reranking score"
             );
         }
-        ranked
+
+        Ok(assemble_memory_packet(
+            query,
+            &nodes,
+            &edges,
+            &lessons,
+            checkpoints.into_iter().next(),
+            traits.into_iter().next(),
+            &ranked,
+            &self.policy,
+        ))
     }
 }
 
-fn build_score_breakdown(
-    node: &Node,
-    semantic_similarity: f32,
-    edges: &[Edge],
-) -> RetrievalScoreBreakdown {
-    let edge_strength = edge_strength_score(node.id, edges);
-    let importance = node.importance.clamp(0.0, 1.0);
-    let recency = recency_score(node);
-    let confidence = node.confidence.clamp(0.0, 1.0);
-    let centrality = centrality_score(node.id, edges);
-    let total = (semantic_similarity * 0.3
-        + edge_strength * 0.15
-        + importance * 0.2
-        + recency * 0.1
-        + confidence * 0.15
-        + centrality * 0.1)
-        .clamp(0.0, 1.0);
+fn seed_node_ids(lexical_hits: &[LexicalCandidate], vector_hits: &[VectorCandidate]) -> Vec<NodeId> {
+    let mut seen = std::collections::HashSet::new();
 
-    RetrievalScoreBreakdown {
-        semantic_similarity,
-        edge_strength,
-        importance,
-        recency,
-        confidence,
-        centrality,
-        total,
-    }
-}
-
-fn edge_strength_score(node_id: NodeId, edges: &[Edge]) -> f32 {
-    let total = edges
+    lexical_hits
         .iter()
-        .filter(|edge| edge.from_node_id == node_id || edge.to_node_id == node_id)
-        .map(|edge| edge.weight)
-        .sum::<f32>();
-
-    (total / 3.0).clamp(0.0, 1.0)
-}
-
-fn recency_score(node: &Node) -> f32 {
-    let age = Utc::now() - node.updated_at;
-    if age <= Duration::days(1) {
-        1.0
-    } else if age <= Duration::days(7) {
-        0.8
-    } else if age <= Duration::days(30) {
-        0.5
-    } else {
-        0.2
-    }
-}
-
-fn centrality_score(node_id: NodeId, edges: &[Edge]) -> f32 {
-    let degree = edges
-        .iter()
-        .filter(|edge| edge.from_node_id == node_id || edge.to_node_id == node_id)
-        .count() as f32;
-
-    (degree / 5.0).clamp(0.0, 1.0)
-}
-
-fn expand_neighbors(
-    core_nodes: &[Node],
-    all_nodes: &[Node],
-    edges: &[Edge],
-    limit: usize,
-) -> Vec<Node> {
-    let core_ids = core_nodes
-        .iter()
-        .map(|node| node.id)
-        .collect::<HashSet<_>>();
-    let mut neighbor_scores = HashMap::<NodeId, f32>::new();
-
-    for edge in edges {
-        if core_ids.contains(&edge.from_node_id) && !core_ids.contains(&edge.to_node_id) {
-            *neighbor_scores.entry(edge.to_node_id).or_default() += edge.weight;
-        }
-        if core_ids.contains(&edge.to_node_id) && !core_ids.contains(&edge.from_node_id) {
-            *neighbor_scores.entry(edge.from_node_id).or_default() += edge.weight;
-        }
-    }
-
-    let mut neighbors = all_nodes
-        .iter()
-        .filter_map(|node| {
-            neighbor_scores
-                .get(&node.id)
-                .copied()
-                .map(|score| (score, node.clone()))
-        })
-        .collect::<Vec<_>>();
-
-    neighbors.sort_by(|left, right| right.0.total_cmp(&left.0));
-    neighbors
-        .into_iter()
-        .take(limit)
-        .map(|(_, node)| node)
-        .collect()
-}
-
-fn select_edges(edges: &[Edge], selected_node_ids: &HashSet<NodeId>) -> Vec<Edge> {
-    edges
-        .iter()
-        .filter(|edge| {
-            selected_node_ids.contains(&edge.from_node_id)
-                && selected_node_ids.contains(&edge.to_node_id)
-        })
-        .cloned()
-        .collect()
-}
-
-fn select_lessons(
-    lessons: &[Lesson],
-    selected_node_ids: &HashSet<NodeId>,
-    limit: usize,
-) -> Vec<Lesson> {
-    let mut ranked_lessons = lessons
-        .iter()
-        .filter_map(|lesson| {
-            let supporting_overlap = lesson
-                .supporting_node_ids
-                .iter()
-                .filter(|node_id| selected_node_ids.contains(node_id))
-                .count() as f32;
-            let score = supporting_overlap * 0.5 + lesson.confidence * 0.5;
-
-            (score > 0.0).then_some((score, lesson.clone()))
-        })
-        .collect::<Vec<_>>();
-
-    ranked_lessons.sort_by(|left, right| right.0.total_cmp(&left.0));
-    ranked_lessons
-        .into_iter()
-        .take(limit)
-        .map(|(_, lesson)| lesson)
-        .collect()
-}
-
-fn collect_node_ids(core_nodes: &[Node], neighbors: &[Node]) -> HashSet<NodeId> {
-    core_nodes
-        .iter()
-        .chain(neighbors.iter())
-        .map(|node| node.id)
-        .collect()
-}
-
-fn node_terms(node: &Node) -> Vec<String> {
-    let mut terms = split_terms(&node.title);
-    terms.extend(split_terms(&node.summary));
-    if let Some(content) = &node.content {
-        terms.extend(split_terms(content));
-    }
-    terms.sort();
-    terms.dedup();
-    terms
-}
-
-fn split_terms(text: &str) -> Vec<String> {
-    text.split_whitespace()
-        .map(|term| {
-            term.trim_matches(|character: char| !character.is_alphanumeric())
-                .to_ascii_lowercase()
-        })
-        .filter(|term| term.len() > 2)
+        .map(|candidate| candidate.node_id)
+        .chain(vector_hits.iter().map(|candidate| candidate.node_id))
+        .filter(|node_id| seen.insert(*node_id))
         .collect()
 }
 
@@ -476,10 +264,10 @@ mod tests {
     };
     use uuid::Uuid;
 
-    use super::{
-        LexicalFallbackRetriever, MemoryQuery, RetrievalEngine, RetrievalError, RetrievalPolicy,
-        RetrievalSource,
-    };
+    use super::lexical::{LexicalSearch, TantivyLexicalIndex};
+    use super::rerank::{merge_and_rank, HybridWeights};
+    use super::vector::{VectorCandidate, VectorSearch};
+    use super::{MemoryQuery, RetrievalEngine, RetrievalError, RetrievalPolicy, RetrievalSource};
 
     #[derive(Debug, Clone)]
     struct TestSource {
@@ -512,128 +300,197 @@ mod tests {
         }
     }
 
-    #[test]
-    fn builds_agent_friendly_memory_packet() {
-        let source = sample_source();
-        let engine =
-            RetrievalEngine::new(source, LexicalFallbackRetriever, RetrievalPolicy::default());
-        let packet = engine
-            .recall_context(&MemoryQuery {
-                text: "cargo migration failure for Nodamem".to_owned(),
-                session_id: Some("session-1".to_owned()),
-                topic: Some("persistence".to_owned()),
-            })
-            .expect("retrieval should succeed");
+    #[derive(Debug, Clone)]
+    struct MockVectorSearch {
+        hits: Vec<VectorCandidate>,
+    }
 
-        assert!((3..=5).contains(&packet.core_nodes.len()));
-        assert!((2..=3).contains(&packet.related_neighbors.len()));
-        assert!((1..=2).contains(&packet.lessons.len()));
-        assert!(packet.checkpoint_summary.is_some());
-        assert!(packet.trait_snapshot.is_some());
-        assert!(packet
-            .packet
-            .nodes
-            .iter()
-            .any(|node| node.title.contains("cargo")));
+    impl VectorSearch for MockVectorSearch {
+        fn search(
+            &self,
+            _query: &MemoryQuery,
+            _nodes: &[Node],
+            limit: usize,
+        ) -> Result<Vec<VectorCandidate>, RetrievalError> {
+            Ok(self.hits.iter().take(limit).cloned().collect())
+        }
     }
 
     #[test]
-    fn expands_graph_neighbors_for_core_nodes() {
-        let engine = RetrievalEngine::with_fallback(sample_source());
+    fn bm25_search_returns_exact_keyword_matches() {
+        let source = sample_source();
+        let index = TantivyLexicalIndex::from_nodes(&source.nodes).expect("index build should work");
+        let hits = index
+            .search("migrations", 5)
+            .expect("lexical search should work");
+
+        assert!(!hits.is_empty());
+        assert!(hits[0].matched_fields.iter().any(|field| field == "title" || field == "content"));
+    }
+
+    #[test]
+    fn vector_results_are_merged_with_lexical_hits() {
+        let source = sample_source();
+        let index = TantivyLexicalIndex::from_nodes(&source.nodes).expect("index build should work");
+        let lexical_hits = index.search("architecture", 5).expect("lexical search should work");
+        let vector_hits = vec![VectorCandidate {
+            node_id: source.nodes[1].id,
+            vector_similarity_score: 0.9,
+        }];
+
+        let ranked = merge_and_rank(
+            &source.nodes,
+            &source.edges,
+            &lexical_hits,
+            &vector_hits,
+            &[],
+            &HybridWeights::default(),
+        );
+
+        let unique_ids = ranked.iter().map(|candidate| candidate.node.id).collect::<std::collections::HashSet<_>>();
+        assert_eq!(ranked.len(), unique_ids.len());
+    }
+
+    #[test]
+    fn reranking_prefers_good_combined_result_over_weak_single_signal_result() {
+        let source = sample_source();
+        let lexical_hits = vec![
+            super::lexical::LexicalCandidate {
+                node_id: source.nodes[0].id,
+                lexical_score: 10.0,
+                matched_fields: vec!["title".to_owned()],
+            },
+            super::lexical::LexicalCandidate {
+                node_id: source.nodes[1].id,
+                lexical_score: 7.0,
+                matched_fields: vec!["summary".to_owned()],
+            },
+        ];
+        let vector_hits = vec![VectorCandidate {
+            node_id: source.nodes[1].id,
+            vector_similarity_score: 0.95,
+        }];
+
+        let ranked = merge_and_rank(
+            &source.nodes,
+            &source.edges,
+            &lexical_hits,
+            &vector_hits,
+            &[],
+            &HybridWeights::default(),
+        );
+
+        assert_eq!(ranked[0].node.id, source.nodes[1].id);
+    }
+
+    #[test]
+    fn memory_packet_assembly_remains_compact_and_stable() {
+        let source = sample_source();
+        let vector_target = source.nodes[1].id;
+        let engine = RetrievalEngine::new(
+            source,
+            MockVectorSearch {
+                hits: vec![VectorCandidate {
+                    node_id: vector_target,
+                    vector_similarity_score: 0.88,
+                }],
+            },
+            RetrievalPolicy::default(),
+        );
         let packet = engine
             .recall_context(&MemoryQuery {
-                text: "Nodamem database".to_owned(),
-                session_id: None,
-                topic: None,
+                text: "architecture migrations".to_owned(),
+                session_id: Some("session-1".to_owned()),
+                topic: Some("planning".to_owned()),
             })
-            .expect("retrieval should succeed");
+            .expect("hybrid retrieval should succeed");
 
-        let neighbor_like = packet
-            .related_neighbors
-            .iter()
-            .filter(|node| node.node_type == NodeType::Entity)
-            .count();
-
-        assert!(neighbor_like >= 1);
-        assert!(packet.packet.edges.len() >= 1);
+        assert!((3..=5).contains(&packet.core_nodes.len()));
+        assert!((0..=3).contains(&packet.related_neighbors.len()));
+        assert!((1..=2).contains(&packet.lessons.len()));
     }
 
     fn sample_source() -> TestSource {
         let now = Utc::now();
         let node_a = node(
-            "cargo migration error",
-            "cargo failed on migration setup",
+            "migration rollout notes",
+            "architecture docs should include migrations and rollout steps",
+            Some("Track migrations, rollout steps, and rollback guidance."),
             0.9,
             0.95,
             now - Duration::hours(2),
-            vec!["tool".to_owned(), "cargo".to_owned()],
+            vec!["architecture".to_owned(), "migrations".to_owned()],
         );
         let node_b = node(
-            "Nodamem database",
-            "embedded Turso database for Nodamem",
-            0.8,
+            "architecture review",
+            "review service boundaries and memory graph rules",
+            Some("Architecture review covered migration safety and runtime boundaries."),
+            0.85,
             0.9,
-            now - Duration::days(1),
-            vec!["project".to_owned(), "database".to_owned()],
+            now - Duration::hours(5),
+            vec!["architecture".to_owned(), "review".to_owned()],
         );
         let node_c = node(
-            "memory graph edges",
-            "graph traversal and related nodes",
-            0.7,
+            "release planning",
+            "planning notes for release cutover",
+            Some("Release planning improved when rollout notes were explicit."),
             0.8,
-            now - Duration::days(3),
-            vec!["graph".to_owned(), "retrieval".to_owned()],
+            0.82,
+            now - Duration::days(1),
+            vec!["planning".to_owned()],
         );
         let node_d = node(
-            "Turso",
-            "Turso embedded mode",
-            0.65,
+            "Turso embedded",
+            "embedded database details",
+            Some("Turso embedded mode stores memory graph state locally."),
             0.7,
-            now - Duration::days(4),
-            vec!["database".to_owned(), "tool".to_owned()],
+            0.75,
+            now - Duration::days(3),
+            vec!["database".to_owned(), "turso".to_owned()],
         );
         let node_e = node(
-            "Nodamem",
-            "main project entity",
-            0.6,
-            0.75,
+            "OpenClaw adapter",
+            "agent runtime adapter behavior",
+            Some("Adapters should not bypass memory validation."),
+            0.78,
+            0.8,
             now - Duration::days(2),
-            vec!["project".to_owned()],
+            vec!["adapter".to_owned()],
         );
 
         TestSource {
+            nodes: vec![node_a.clone(), node_b.clone(), node_c.clone(), node_d.clone(), node_e.clone()],
             edges: vec![
                 edge(node_a.id, node_b.id, 0.9),
-                edge(node_b.id, node_d.id, 0.7),
-                edge(node_b.id, node_e.id, 0.8),
-                edge(node_c.id, node_e.id, 0.5),
+                edge(node_b.id, node_c.id, 0.8),
+                edge(node_c.id, node_e.id, 0.65),
+                edge(node_b.id, node_d.id, 0.5),
             ],
             lessons: vec![
                 Lesson {
                     id: LessonId(Uuid::new_v4()),
                     lesson_type: LessonType::Strategy,
                     status: MemoryStatus::Active,
-                    title: "Handle migrations early".to_owned(),
-                    statement: "Database migrations should run at startup.".to_owned(),
-                    confidence: 0.8,
+                    title: "Keep rollout notes explicit".to_owned(),
+                    statement: "Planning improves when rollout notes and migrations are explicit.".to_owned(),
+                    confidence: 0.82,
                     evidence_count: 2,
-                    reinforcement_count: 3,
-                    supporting_node_ids: vec![node_a.id, node_b.id],
+                    reinforcement_count: 2,
+                    supporting_node_ids: vec![node_a.id, node_c.id],
                     contradicting_node_ids: Vec::new(),
                     created_at: now,
                     updated_at: now,
                 },
                 Lesson {
                     id: LessonId(Uuid::new_v4()),
-                    lesson_type: LessonType::Task,
+                    lesson_type: LessonType::Domain,
                     status: MemoryStatus::Active,
-                    title: "Expand graph neighbors".to_owned(),
-                    statement: "Graph retrieval should include related neighboring nodes."
-                        .to_owned(),
-                    confidence: 0.75,
-                    evidence_count: 2,
-                    reinforcement_count: 2,
-                    supporting_node_ids: vec![node_c.id, node_e.id],
+                    title: "Preserve store boundaries".to_owned(),
+                    statement: "Adapters should not touch raw database tables.".to_owned(),
+                    confidence: 0.77,
+                    evidence_count: 1,
+                    reinforcement_count: 1,
+                    supporting_node_ids: vec![node_e.id],
                     contradicting_node_ids: Vec::new(),
                     created_at: now,
                     updated_at: now,
@@ -642,9 +499,9 @@ mod tests {
             checkpoints: vec![Checkpoint {
                 id: CheckpointId(Uuid::new_v4()),
                 status: MemoryStatus::Active,
-                title: "Recent persistence work".to_owned(),
-                summary: "Focused on embedded database and migration flow.".to_owned(),
-                node_ids: vec![node_a.id, node_b.id],
+                title: "recent planning".to_owned(),
+                summary: "Recent work emphasized rollout notes and architecture review.".to_owned(),
+                node_ids: vec![node_a.id, node_b.id, node_c.id],
                 lesson_ids: Vec::new(),
                 trait_ids: Vec::new(),
                 created_at: now,
@@ -652,24 +509,24 @@ mod tests {
             }],
             traits: vec![TraitState {
                 id: TraitId(Uuid::new_v4()),
-                trait_type: TraitType::EvidenceReliance,
+                trait_type: TraitType::Practicality,
                 status: MemoryStatus::Active,
-                label: "Evidence Reliance".to_owned(),
-                description: "Favors validated signals before deciding.".to_owned(),
+                label: "Practicality".to_owned(),
+                description: "Optimizes for useful plans.".to_owned(),
                 strength: 0.8,
-                confidence: 0.7,
+                confidence: 0.75,
                 supporting_lesson_ids: Vec::new(),
-                supporting_node_ids: vec![node_b.id],
+                supporting_node_ids: vec![node_c.id],
                 created_at: now,
                 updated_at: now,
             }],
-            nodes: vec![node_a, node_b, node_c, node_d, node_e],
         }
     }
 
     fn node(
         title: &str,
         summary: &str,
+        content: Option<&str>,
         confidence: f32,
         importance: f32,
         updated_at: chrono::DateTime<Utc>,
@@ -677,35 +534,30 @@ mod tests {
     ) -> Node {
         Node {
             id: NodeId(Uuid::new_v4()),
-            node_type: if title == "Turso" || title == "Nodamem" {
-                NodeType::Entity
-            } else {
-                NodeType::Semantic
-            },
+            node_type: NodeType::Semantic,
             status: MemoryStatus::Active,
             title: title.to_owned(),
             summary: summary.to_owned(),
-            content: Some(summary.to_owned()),
+            content: content.map(str::to_owned),
             tags,
             confidence,
             importance,
             created_at: updated_at,
             updated_at,
             last_accessed_at: None,
-            source_event_id: Some("seed".to_owned()),
+            source_event_id: Some("evt-1".to_owned()),
         }
     }
 
     fn edge(from_node_id: NodeId, to_node_id: NodeId, weight: f32) -> Edge {
-        let now = Utc::now();
         Edge {
             id: EdgeId(Uuid::new_v4()),
             edge_type: EdgeType::RelatedTo,
             from_node_id,
             to_node_id,
             weight,
-            created_at: now,
-            updated_at: now,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
         }
     }
 }
