@@ -5,7 +5,7 @@ use memory_store::StoreRepository;
 use tantivy::collector::TopDocs;
 use tantivy::directory::RamDirectory;
 use tantivy::query::QueryParser;
-use tantivy::schema::{Field, Schema, STORED, STRING, TEXT, Value as _};
+use tantivy::schema::{Field, Schema, Value as _, STORED, STRING, TEXT};
 use tantivy::{doc, Index, IndexReader, IndexWriter, Term};
 use tracing::debug;
 
@@ -154,8 +154,10 @@ impl LexicalIndexWriter for TantivyLexicalWriter {
 
 impl TantivyLexicalWriter {
     pub fn delete_node(&mut self, node_id: NodeId) -> Result<(), RetrievalError> {
-        self.writer
-            .delete_term(Term::from_field_text(self.schema.node_id, &node_id.0.to_string()));
+        self.writer.delete_term(Term::from_field_text(
+            self.schema.node_id,
+            &node_id.0.to_string(),
+        ));
         self.writer.commit()?;
         self.reader.reload()?;
         Ok(())
@@ -227,7 +229,10 @@ fn build_schema() -> BuiltSchema {
 }
 
 fn index_document(writer: &mut IndexWriter, schema: &LexicalSchema, node: &Node) {
-    writer.delete_term(Term::from_field_text(schema.node_id, &node.id.0.to_string()));
+    writer.delete_term(Term::from_field_text(
+        schema.node_id,
+        &node.id.0.to_string(),
+    ));
     let _ = writer.add_document(doc!(
         schema.node_id => node.id.0.to_string(),
         schema.node_type => format!("{:?}", node.node_type).to_ascii_lowercase(),
