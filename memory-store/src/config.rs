@@ -81,8 +81,7 @@ impl StoreConfig {
 
     #[must_use]
     pub fn sync_requested_without_credentials(&self) -> bool {
-        self.sync_enabled
-            && (self.turso_database_url.is_none() || self.turso_auth_token.is_none())
+        self.sync_enabled && (self.turso_database_url.is_none() || self.turso_auth_token.is_none())
     }
 }
 
