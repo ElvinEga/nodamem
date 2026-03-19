@@ -274,7 +274,8 @@ mod tests {
     use super::lexical::{LexicalSearch, TantivyLexicalIndex};
     use super::rerank::{merge_and_rank, HybridWeights};
     use super::vector::{
-        EmbeddedQuery, QueryEmbeddingProvider, TursoVectorSearch, VectorCandidate, VectorSearch,
+        DeterministicQueryEmbedder, EmbeddedQuery, QueryEmbeddingProvider, TursoVectorSearch,
+        VectorCandidate, VectorSearch,
     };
     use super::{MemoryQuery, RetrievalEngine, RetrievalError, RetrievalPolicy, RetrievalSource};
 
@@ -498,6 +499,82 @@ mod tests {
             .expect("hybrid retrieval should succeed");
 
         assert_eq!(packet.core_nodes[0].id, source.nodes[1].id);
+    }
+
+    #[test]
+    fn deterministic_turso_vector_search_finds_semantic_match_without_keywords() {
+        let source = sample_source();
+        let runtime = build_semantic_vector_store(&source.nodes);
+        let vector_search = deterministic_turso_vector_search(&runtime.database);
+
+        let hits = vector_search
+            .search(
+                &MemoryQuery {
+                    text: "deployment checklist".to_owned(),
+                    session_id: None,
+                    topic: Some("release".to_owned()),
+                },
+                &source.nodes,
+                3,
+            )
+            .expect("vector search should succeed");
+
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].node_id, source.nodes[0].id);
+        assert!(hits[0].vector_similarity_score > 0.0);
+    }
+
+    #[test]
+    fn hybrid_retrieval_improves_recall_quality_over_lexical_only() {
+        let source = sample_source();
+        let runtime = build_semantic_vector_store(&source.nodes);
+        let lexical_index =
+            TantivyLexicalIndex::from_nodes(&source.nodes).expect("index build should work");
+        let vector_search = deterministic_turso_vector_search(&runtime.database);
+        let hybrid_engine = RetrievalEngine::new(
+            source.clone(),
+            deterministic_turso_vector_search(&runtime.database),
+            RetrievalPolicy::default(),
+        );
+        let query = MemoryQuery {
+            text: "service boundaries cutover checklist".to_owned(),
+            session_id: Some("session-semantic".to_owned()),
+            topic: Some("release".to_owned()),
+        };
+
+        let lexical_hits = lexical_index
+            .search(&query.text, 5)
+            .expect("lexical search should succeed");
+        let vector_hits = vector_search
+            .search(&query, &source.nodes, 5)
+            .expect("vector search should succeed");
+        let hybrid = hybrid_engine
+            .recall_context(&query)
+            .expect("hybrid retrieval should succeed");
+
+        assert!(lexical_hits
+            .iter()
+            .all(|candidate| candidate.node_id != source.nodes[0].id));
+        assert!(lexical_hits
+            .iter()
+            .any(|candidate| candidate.node_id == source.nodes[1].id));
+        assert!(vector_hits
+            .iter()
+            .any(|candidate| candidate.node_id == source.nodes[0].id));
+        assert!(hybrid
+            .core_nodes
+            .iter()
+            .any(|node| node.id == source.nodes[0].id));
+        assert!(hybrid
+            .packet
+            .nodes
+            .iter()
+            .any(|node| node.id == source.nodes[0].id));
+        assert!(hybrid
+            .packet
+            .nodes
+            .iter()
+            .any(|node| node.id == source.nodes[1].id));
     }
 
     #[test]
@@ -752,6 +829,17 @@ mod tests {
         )
     }
 
+    fn deterministic_turso_vector_search(
+        database: &libsql::Database,
+    ) -> TursoVectorSearch<DeterministicQueryEmbedder> {
+        TursoVectorSearch::new(
+            database
+                .connect()
+                .expect("vector search connection should open"),
+            DeterministicQueryEmbedder::default(),
+        )
+    }
+
     fn sample_embeddings() -> HashMap<String, Vec<f32>> {
         HashMap::from([
             ("migration rollout notes".to_owned(), vec![1.0, 0.0, 0.0]),
@@ -760,6 +848,47 @@ mod tests {
             ("Turso embedded".to_owned(), vec![0.1, 0.95, 0.0]),
             ("OpenClaw adapter".to_owned(), vec![0.0, 0.1, 1.0]),
         ])
+    }
+
+    fn build_semantic_vector_store(nodes: &[Node]) -> StoreRuntime {
+        let embedder = DeterministicQueryEmbedder::default();
+        let tempdir = tempdir().expect("temporary directory should be created");
+        let db_dir = tempdir.path().to_path_buf();
+        std::mem::forget(tempdir);
+        let config = StoreConfig {
+            local_database_path: db_dir.join("retrieval-semantic-vectors.db"),
+            ..StoreConfig::default()
+        };
+
+        let runtime = run_async(StoreRuntime::open(config)).expect("store should open");
+        let repository = runtime.repository();
+        run_async(async {
+            for node in nodes {
+                repository.insert_node(node).await?;
+                let mut semantic_text = format!("{} {}", node.title.trim(), node.summary.trim());
+                if let Some(content) = node
+                    .content
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    semantic_text.push(' ');
+                    semantic_text.push_str(content);
+                }
+                repository
+                    .upsert_node_embedding(&NodeEmbeddingRecord {
+                        node_id: node.id,
+                        embedding_model: embedder.embedding_model().to_owned(),
+                        embedding: embedder.embed_text(&semantic_text),
+                    })
+                    .await?;
+            }
+
+            Result::<(), memory_store::StoreError>::Ok(())
+        })
+        .expect("nodes and embeddings should persist");
+
+        runtime
     }
 
     fn run_async<F>(future: F) -> F::Output
