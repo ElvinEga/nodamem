@@ -1,12 +1,15 @@
 //! Deterministic background consolidation jobs for Nodamem.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::Duration;
+use libsql::Connection;
 use memory_core::{
     Checkpoint, CheckpointId, Edge, Lesson, MemoryStatus, Node, NodeId, Timestamp, TraitState,
 };
 use memory_lessons::LessonsMarker;
+use memory_store::{StoreError, StoreRepository};
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -92,6 +95,33 @@ pub struct SleepRunResult {
     pub reports: Vec<JobReport>,
 }
 
+#[derive(Debug)]
+pub enum SleepServiceError {
+    Store(StoreError),
+}
+
+impl std::fmt::Display for SleepServiceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(error) => write!(formatter, "sleep service store error: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for SleepServiceError {}
+
+impl From<StoreError> for SleepServiceError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SleepServiceReport {
+    pub recall_nodes_recorded: usize,
+    pub job_reports: Vec<JobReport>,
+}
+
 /// Interface for a deterministic maintenance job.
 pub trait SleepJob {
     fn name(&self) -> &'static str;
@@ -104,6 +134,45 @@ pub trait SleepScheduler {
     fn run_all(&self, state: SleepState, policy: &SleepPolicy, now: Timestamp) -> SleepRunResult;
 }
 
+/// Trigger abstraction for deciding when deterministic maintenance should run.
+pub trait SleepJobScheduler: Send + Sync {
+    fn on_recall_batch(&self, recalled_nodes: usize) -> bool;
+}
+
+/// Simple scheduler that runs maintenance every N recall batches.
+#[derive(Debug)]
+pub struct EveryNRecallBatches {
+    every_batches: u64,
+    counter: AtomicU64,
+}
+
+impl EveryNRecallBatches {
+    #[must_use]
+    pub fn new(every_batches: u64) -> Self {
+        Self {
+            every_batches: every_batches.max(1),
+            counter: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Default for EveryNRecallBatches {
+    fn default() -> Self {
+        Self::new(6)
+    }
+}
+
+impl SleepJobScheduler for EveryNRecallBatches {
+    fn on_recall_batch(&self, recalled_nodes: usize) -> bool {
+        if recalled_nodes == 0 {
+            return false;
+        }
+
+        let next = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
+        next % self.every_batches == 0
+    }
+}
+
 /// Default runner that executes all configured jobs in sequence.
 #[derive(Debug, Clone)]
 pub struct SleepRunner {
@@ -114,6 +183,161 @@ impl SleepRunner {
     #[must_use]
     pub fn new(jobs: Vec<JobKind>) -> Self {
         Self { jobs }
+    }
+}
+
+#[derive(Debug)]
+pub struct StoreSleepService<S = EveryNRecallBatches> {
+    connection: Connection,
+    runner: SleepRunner,
+    policy: SleepPolicy,
+    scheduler: S,
+}
+
+impl<S> StoreSleepService<S> {
+    #[must_use]
+    pub fn new(
+        connection: Connection,
+        runner: SleepRunner,
+        policy: SleepPolicy,
+        scheduler: S,
+    ) -> Self {
+        Self {
+            connection,
+            runner,
+            policy,
+            scheduler,
+        }
+    }
+}
+
+impl<S> StoreSleepService<S>
+where
+    S: SleepJobScheduler,
+{
+    pub async fn record_recall_batch(
+        &self,
+        node_ids: &[NodeId],
+    ) -> Result<usize, SleepServiceError> {
+        let repository = StoreRepository::new(&self.connection);
+        let recorded = repository.increment_recall_counts(node_ids).await?;
+        if recorded > 0 {
+            debug!(recorded, "recorded node recalls for future reconsolidation");
+        }
+        Ok(recorded)
+    }
+
+    pub async fn run_now(&self, now: Timestamp) -> Result<SleepRunResult, SleepServiceError> {
+        let mut state = self.load_state().await?;
+        let original_state = state.clone();
+        let result = self
+            .runner
+            .run_all(std::mem::take(&mut state), &self.policy, now);
+        self.persist_state(&original_state, &result.state).await?;
+        for report in &result.reports {
+            info!(
+                job_name = report.job_name,
+                changes = report.changes,
+                logs = report.logs.len(),
+                "persisted sleep maintenance job"
+            );
+        }
+        Ok(result)
+    }
+
+    pub async fn record_recall_and_maybe_run(
+        &self,
+        node_ids: &[NodeId],
+        now: Timestamp,
+    ) -> Result<SleepServiceReport, SleepServiceError> {
+        let recorded = self.record_recall_batch(node_ids).await?;
+        let job_reports = if self.scheduler.on_recall_batch(recorded) {
+            self.run_now(now).await?.reports
+        } else {
+            Vec::new()
+        };
+
+        Ok(SleepServiceReport {
+            recall_nodes_recorded: recorded,
+            job_reports,
+        })
+    }
+
+    async fn load_state(&self) -> Result<SleepState, SleepServiceError> {
+        let repository = StoreRepository::new(&self.connection);
+        Ok(SleepState {
+            nodes: repository.list_nodes().await?,
+            edges: repository.list_edges().await?,
+            lessons: repository.list_lessons().await?,
+            traits: repository.list_trait_states().await?,
+            checkpoints: repository.load_recent_checkpoints(25).await?,
+            recall_counts: repository.load_node_recall_counts().await?,
+        })
+    }
+
+    async fn persist_state(
+        &self,
+        original: &SleepState,
+        updated: &SleepState,
+    ) -> Result<(), SleepServiceError> {
+        let repository = StoreRepository::new(&self.connection);
+        let original_nodes = original
+            .nodes
+            .iter()
+            .map(|node| (node.id, node))
+            .collect::<HashMap<_, _>>();
+        for node in &updated.nodes {
+            if original_nodes.get(&node.id) != Some(&node) {
+                let _ = repository.update_node(node).await?;
+            }
+        }
+
+        let original_edges = original
+            .edges
+            .iter()
+            .map(|edge| (edge.id, edge))
+            .collect::<HashMap<_, _>>();
+        for edge in &updated.edges {
+            if original_edges.get(&edge.id) != Some(&edge) {
+                let _ = repository.update_edge(edge).await?;
+            }
+        }
+
+        let original_lessons = original
+            .lessons
+            .iter()
+            .map(|lesson| (lesson.id, lesson))
+            .collect::<HashMap<_, _>>();
+        for lesson in &updated.lessons {
+            if original_lessons.get(&lesson.id) != Some(&lesson) {
+                let _ = repository.upsert_lesson(lesson).await?;
+                repository.replace_lesson_sources(lesson).await?;
+            }
+        }
+
+        let original_traits = original
+            .traits
+            .iter()
+            .map(|trait_state| (trait_state.id, trait_state))
+            .collect::<HashMap<_, _>>();
+        for trait_state in &updated.traits {
+            if original_traits.get(&trait_state.id) != Some(&trait_state) {
+                let _ = repository.save_trait_state(trait_state).await?;
+            }
+        }
+
+        let original_checkpoint_ids = original
+            .checkpoints
+            .iter()
+            .map(|checkpoint| checkpoint.id)
+            .collect::<HashSet<_>>();
+        for checkpoint in &updated.checkpoints {
+            if !original_checkpoint_ids.contains(&checkpoint.id) {
+                let _ = repository.create_checkpoint(checkpoint).await?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -611,6 +835,8 @@ mod tests {
     use memory_core::{
         EdgeId, EdgeType, LessonId, LessonType, MemoryStatus, NodeType, TraitId, TraitType,
     };
+    use memory_store::{StoreConfig, StoreRuntime};
+    use tempfile::tempdir;
 
     #[test]
     fn archives_isolated_low_value_nodes() {
@@ -787,6 +1013,71 @@ mod tests {
         assert_eq!(result.reports.len(), 2);
     }
 
+    #[test]
+    fn store_sleep_service_persists_checkpoint_and_recall_counts() {
+        let now = Utc::now();
+        let node_a = sample_node("task memory", "active node one", 0.8, 0.7, now);
+        let node_b = sample_node("task memory two", "active node two", 0.7, 0.6, now);
+        let lesson = Lesson {
+            id: LessonId(Uuid::new_v4()),
+            lesson_type: LessonType::Task,
+            status: MemoryStatus::Active,
+            title: "Batch related work".to_owned(),
+            statement: "Batch related work to reduce context switching.".to_owned(),
+            confidence: 0.6,
+            evidence_count: 1,
+            reinforcement_count: 0,
+            supporting_node_ids: vec![node_a.id, node_b.id],
+            contradicting_node_ids: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let tempdir = tempdir().expect("temporary directory should exist");
+        let runtime = run_async(StoreRuntime::open(StoreConfig {
+            local_database_path: tempdir.path().join("sleep-service.db"),
+            ..StoreConfig::default()
+        }))
+        .expect("store should open");
+        run_async(async {
+            let repository = runtime.repository();
+            let _ = repository.insert_node(&node_a).await?;
+            let _ = repository.insert_node(&node_b).await?;
+            let _ = repository.upsert_lesson(&lesson).await?;
+            repository.replace_lesson_sources(&lesson).await?;
+            Result::<(), StoreError>::Ok(())
+        })
+        .expect("seed data should persist");
+
+        let service = StoreSleepService::new(
+            runtime
+                .database
+                .connect()
+                .expect("maintenance connection should open"),
+            SleepRunner::default(),
+            SleepPolicy::default(),
+            EveryNRecallBatches::new(1),
+        );
+        let report = run_async(service.record_recall_and_maybe_run(&[node_a.id, node_b.id], now))
+            .expect("sleep service should run");
+
+        assert_eq!(report.recall_nodes_recorded, 2);
+        assert!(!report.job_reports.is_empty());
+
+        let persisted = run_async(async {
+            let repository = runtime.repository();
+            Ok::<_, StoreError>((
+                repository.load_recent_checkpoints(10).await?,
+                repository.load_node_recall_counts().await?,
+            ))
+        })
+        .expect("persisted state should load");
+
+        assert_eq!(persisted.0.len(), 1);
+        assert_eq!(persisted.1.get(&node_a.id), Some(&1));
+        assert_eq!(persisted.1.get(&node_b.id), Some(&1));
+    }
+
     fn sample_node(
         title: &str,
         summary: &str,
@@ -821,5 +1112,16 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    fn run_async<F>(future: F) -> F::Output
+    where
+        F: std::future::Future,
+    {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime should be created")
+            .block_on(future)
     }
 }
