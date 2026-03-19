@@ -26,7 +26,12 @@ impl GraphExpander {
         Self { config }
     }
 
-    pub fn expand(&self, seeds: &[NodeId], nodes: &[Node], edges: &[Edge]) -> Vec<NeighborCandidate> {
+    pub fn expand(
+        &self,
+        seeds: &[NodeId],
+        nodes: &[Node],
+        edges: &[Edge],
+    ) -> Vec<NeighborCandidate> {
         if seeds.is_empty() {
             return Vec::new();
         }
