@@ -10,6 +10,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
+use libsql::Connection;
 use memory_core::{Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, Node, NodeId, TraitState};
 use memory_imagination::PlanningImaginationRequest;
 pub use memory_imagination::{
@@ -25,8 +26,8 @@ use memory_lessons::{
 };
 use memory_personality::{OutcomeRecord, PersonalityService, TraitUpdate};
 use memory_retrieval::{
-    vector::NullVectorSearch, MemoryQuery, RetrievalEngine, RetrievalError, RetrievalPolicy,
-    RetrievalSource,
+    vector::{DeterministicQueryEmbedder, NullVectorSearch, TursoVectorSearch, VectorSearch},
+    MemoryQuery, RetrievalEngine, RetrievalError, RetrievalPolicy, RetrievalSource,
 };
 use memory_sleep::SleepMarker;
 use memory_store::StoreMarker;
@@ -262,13 +263,27 @@ impl IntoResponse for AgentApiError {
 }
 
 /// Internal service façade. It composes existing memory crates but stays independent of transport.
-#[derive(Debug)]
 pub struct AgentApiService {
     ingest_pipeline: IngestPipeline,
     admission_engine: AdmissionEngine<DeterministicDuplicateDetector>,
     lesson_service: LessonService<DeterministicLessonMatcher, DeterministicContradictionHandler>,
     personality_service: PersonalityService,
     imagination_service: ImaginationService,
+    vector_search: Box<dyn VectorSearch>,
+}
+
+impl fmt::Debug for AgentApiService {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AgentApiService")
+            .field("ingest_pipeline", &self.ingest_pipeline)
+            .field("admission_engine", &self.admission_engine)
+            .field("lesson_service", &self.lesson_service)
+            .field("personality_service", &self.personality_service)
+            .field("imagination_service", &self.imagination_service)
+            .field("vector_search", &"dyn VectorSearch")
+            .finish()
+    }
 }
 
 /// Internal service interface that adapter layers can depend on without touching transport or storage.
@@ -312,6 +327,7 @@ impl Default for AgentApiService {
             lesson_service: LessonService::default(),
             personality_service: PersonalityService::default(),
             imagination_service: ImaginationService::default(),
+            vector_search: Box::new(NullVectorSearch),
         }
     }
 }
@@ -320,6 +336,23 @@ impl AgentApiService {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn with_vector_search<V>(mut self, vector_search: V) -> Self
+    where
+        V: VectorSearch + 'static,
+    {
+        self.vector_search = Box::new(vector_search);
+        self
+    }
+
+    #[must_use]
+    pub fn new_with_connection(connection: Connection) -> Self {
+        Self::default().with_vector_search(TursoVectorSearch::new(
+            connection,
+            DeterministicQueryEmbedder::default(),
+        ))
     }
 
     pub fn recall_context(
@@ -339,7 +372,7 @@ impl AgentApiService {
             checkpoints: request.checkpoints.clone(),
             traits: request.traits.clone(),
         };
-        let engine = RetrievalEngine::new(source, NullVectorSearch, RetrievalPolicy::default());
+        let engine = RetrievalEngine::new(source, &*self.vector_search, RetrievalPolicy::default());
         let retrieved = engine.recall_context(&MemoryQuery {
             text: request.text.clone(),
             session_id: request.session_id.clone(),
@@ -794,6 +827,9 @@ mod tests {
 
     use axum::http::{Method, Request, StatusCode};
     use memory_core::{MemoryStatus, Node, NodeId, NodeType};
+    use memory_retrieval::vector::DeterministicQueryEmbedder;
+    use memory_store::{NodeEmbeddingRecord, StoreConfig, StoreRuntime};
+    use tempfile::tempdir;
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -838,6 +874,59 @@ mod tests {
         assert!(descriptions
             .iter()
             .any(|description| description.path == "/generate-imagined-scenarios"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recall_context_uses_turso_vector_search_when_configured() {
+        let embedder = DeterministicQueryEmbedder::default();
+        let tempdir = tempdir().expect("temporary directory should exist");
+        let runtime = StoreRuntime::open(StoreConfig {
+            local_database_path: tempdir.path().join("agent-api-vectors.db"),
+            ..StoreConfig::default()
+        })
+        .await
+        .expect("store should open");
+        let semantic_node = sample_node("migration rollout notes");
+        runtime
+            .repository()
+            .insert_node(&semantic_node)
+            .await
+            .expect("node should persist");
+        runtime
+            .repository()
+            .upsert_node_embedding(&NodeEmbeddingRecord {
+                node_id: semantic_node.id,
+                embedding_model: embedder.embedding_model().to_owned(),
+                embedding: embedder.embed_text(
+                    "migration rollout notes architecture docs should include rollout steps and rollback guidance",
+                ),
+            })
+            .await
+            .expect("embedding should persist");
+
+        let service = AgentApiService::new_with_connection(
+            runtime
+                .database
+                .connect()
+                .expect("service vector connection should open"),
+        );
+        let response = service
+            .recall_context(&RecallContextRequest {
+                text: "deployment checklist".to_owned(),
+                session_id: Some("svc-session".to_owned()),
+                topic: Some("release".to_owned()),
+                nodes: vec![semantic_node.clone()],
+                edges: Vec::new(),
+                lessons: Vec::new(),
+                checkpoints: Vec::new(),
+                traits: Vec::new(),
+            })
+            .expect("recall should succeed");
+
+        assert_eq!(
+            response.core_nodes.first().map(|node| node.id),
+            Some(semantic_node.id)
+        );
     }
 
     fn sample_node(title: &str) -> Node {
