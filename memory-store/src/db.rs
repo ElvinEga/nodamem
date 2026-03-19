@@ -73,9 +73,7 @@ async fn open_database_with_optional_sync(
                 .await
                 .map_err(StoreError::from)
         }
-        StoreBackend::Synced(sync_config) => {
-            try_open_synced_database(config, sync_config).await
-        }
+        StoreBackend::Synced(sync_config) => try_open_synced_database(config, sync_config).await,
     }
 }
 
@@ -225,7 +223,10 @@ mod tests {
 
     #[test]
     fn keeps_local_backend_by_default() {
-        assert_eq!(select_backend(&StoreConfig::default()), StoreBackend::LocalOnly);
+        assert_eq!(
+            select_backend(&StoreConfig::default()),
+            StoreBackend::LocalOnly
+        );
         assert!(should_run_local_migrations(&StoreBackend::LocalOnly));
     }
 
@@ -249,7 +250,9 @@ mod tests {
                 assert_eq!(sync.database_url, "libsql://example-org.turso.io");
                 assert_eq!(sync.auth_token, "secret");
                 assert!(sync.read_your_writes);
-                assert!(!should_run_local_migrations(&StoreBackend::Synced(sync.clone())));
+                assert!(!should_run_local_migrations(&StoreBackend::Synced(
+                    sync.clone()
+                )));
             }
             StoreBackend::LocalOnly => panic!("expected synced backend selection"),
         }
