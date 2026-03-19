@@ -1,5 +1,7 @@
 //! Repository layer for persisting and loading Nodamem graph records.
 
+use std::collections::HashMap;
+
 use libsql::{params, Connection};
 use memory_core::{
     Checkpoint, Edge, ImaginedScenario, Lesson, LessonId, Node, NodeId, ScenarioId, TraitId,
@@ -170,6 +172,42 @@ impl<'a> StoreRepository<'a> {
             .map(|row| map_edge(&row))
             .transpose()?
             .ok_or_else(|| missing_row("edge", edge.id.0))
+    }
+
+    pub async fn update_edge(&self, edge: &Edge) -> Result<Option<Edge>, StoreError> {
+        self.connection
+            .execute(
+                "UPDATE edges
+                 SET edge_type = ?2,
+                     from_node_id = ?3,
+                     to_node_id = ?4,
+                     weight = ?5,
+                     created_at = ?6,
+                     updated_at = ?7
+                 WHERE id = ?1",
+                params![
+                    edge.id.0.to_string(),
+                    format_edge_type(edge.edge_type),
+                    edge.from_node_id.0.to_string(),
+                    edge.to_node_id.0.to_string(),
+                    f64::from(edge.weight),
+                    format_timestamp(edge.created_at),
+                    format_timestamp(edge.updated_at),
+                ],
+            )
+            .await?;
+
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, edge_type, from_node_id, to_node_id, weight, created_at, updated_at
+                 FROM edges
+                 WHERE id = ?1",
+                params![edge.id.0.to_string()],
+            )
+            .await?;
+
+        rows.next().await?.map(|row| map_edge(&row)).transpose()
     }
 
     pub async fn get_neighbors(&self, node_id: NodeId) -> Result<Vec<Node>, StoreError> {
@@ -355,6 +393,27 @@ impl<'a> StoreRepository<'a> {
         Ok(())
     }
 
+    pub async fn replace_lesson_sources(&self, lesson: &Lesson) -> Result<(), StoreError> {
+        self.connection
+            .execute(
+                "DELETE FROM lesson_sources WHERE lesson_id = ?1",
+                params![lesson.id.0.to_string()],
+            )
+            .await?;
+
+        for node_id in &lesson.supporting_node_ids {
+            self.attach_lesson_source(lesson.id, *node_id, LessonSourceRole::Supporting)
+                .await?;
+        }
+
+        for node_id in &lesson.contradicting_node_ids {
+            self.attach_lesson_source(lesson.id, *node_id, LessonSourceRole::Contradicting)
+                .await?;
+        }
+
+        Ok(())
+    }
+
     pub async fn load_trait_state(
         &self,
         trait_id: TraitId,
@@ -511,6 +570,49 @@ impl<'a> StoreRepository<'a> {
 
     pub async fn list_trait_states(&self) -> Result<Vec<TraitState>, StoreError> {
         self.load_all_trait_states().await
+    }
+
+    pub async fn increment_recall_counts(&self, node_ids: &[NodeId]) -> Result<usize, StoreError> {
+        let mut unique_ids = node_ids.to_vec();
+        unique_ids.sort_by_key(|node_id| node_id.0);
+        unique_ids.dedup();
+
+        for node_id in &unique_ids {
+            self.connection
+                .execute(
+                    "INSERT INTO node_recall_stats (node_id, recall_count, last_recalled_at)
+                     VALUES (?1, 1, CURRENT_TIMESTAMP)
+                     ON CONFLICT(node_id) DO UPDATE SET
+                        recall_count = node_recall_stats.recall_count + 1,
+                        last_recalled_at = CURRENT_TIMESTAMP",
+                    params![node_id.0.to_string()],
+                )
+                .await?;
+        }
+
+        Ok(unique_ids.len())
+    }
+
+    pub async fn load_node_recall_counts(&self) -> Result<HashMap<NodeId, u32>, StoreError> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT node_id, recall_count
+                 FROM node_recall_stats
+                 ORDER BY recall_count DESC, updated_at DESC",
+                params![],
+            )
+            .await?;
+
+        let mut recall_counts = HashMap::new();
+        while let Some(row) = rows.next().await? {
+            recall_counts.insert(
+                NodeId(Uuid::parse_str(&row.get::<String>(0)?)?),
+                row.get::<i64>(1)? as u32,
+            );
+        }
+
+        Ok(recall_counts)
     }
 
     pub async fn inspect_node_audit(
