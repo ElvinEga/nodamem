@@ -14,10 +14,10 @@ use uuid::Uuid;
 use crate::audit::{LessonAuditTrail, NodeAuditTrail};
 use crate::error::StoreError;
 use crate::mapper::{
-    format_edge_type, format_imagination_status, format_lesson_type, format_memory_status,
-    format_node_type, format_optional_timestamp, format_timestamp, format_trait_change_kind,
-    format_trait_type, lesson_id_strings, map_checkpoint, map_edge, map_imagined_scenario,
-    map_lesson, map_node, map_self_model, map_trait_event, map_trait_state,
+    format_edge_type, format_imagination_status, format_imagined_scenario_kind, format_lesson_type,
+    format_memory_status, format_node_type, format_optional_timestamp, format_timestamp,
+    format_trait_change_kind, format_trait_type, lesson_id_strings, map_checkpoint, map_edge,
+    map_imagined_scenario, map_lesson, map_node, map_self_model, map_trait_event, map_trait_state,
     map_working_memory_entry, node_id_strings, payload_to_json, to_json, trait_id_strings,
 };
 
@@ -944,12 +944,13 @@ impl<'a> StoreRepository<'a> {
         self.connection
             .execute(
                 "INSERT INTO imagined_nodes (
-                    id, status, title, premise, narrative, basis_source_node_ids_json,
+                    id, kind, status, title, premise, narrative, basis_source_node_ids_json,
                     basis_lesson_ids_json, active_goal_node_ids_json, trait_snapshot_json,
-                    predicted_outcomes_json, plausibility_score, novelty_score, usefulness_score,
-                    created_at, updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    self_model_snapshot_json, predicted_outcomes_json, plausibility_score,
+                    novelty_score, usefulness_score, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                  ON CONFLICT(id) DO UPDATE SET
+                    kind = excluded.kind,
                     status = excluded.status,
                     title = excluded.title,
                     premise = excluded.premise,
@@ -958,12 +959,14 @@ impl<'a> StoreRepository<'a> {
                     basis_lesson_ids_json = excluded.basis_lesson_ids_json,
                     active_goal_node_ids_json = excluded.active_goal_node_ids_json,
                     trait_snapshot_json = excluded.trait_snapshot_json,
+                    self_model_snapshot_json = excluded.self_model_snapshot_json,
                     predicted_outcomes_json = excluded.predicted_outcomes_json,
                     plausibility_score = excluded.plausibility_score,
                     novelty_score = excluded.novelty_score,
                     usefulness_score = excluded.usefulness_score",
                 params![
                     scenario.id.0.to_string(),
+                    format_imagined_scenario_kind(scenario.kind),
                     format_imagination_status(scenario.status),
                     scenario.title.clone(),
                     scenario.premise.clone(),
@@ -972,6 +975,11 @@ impl<'a> StoreRepository<'a> {
                     to_json(&lesson_id_strings(&scenario.basis_lesson_ids))?,
                     to_json(&node_id_strings(&scenario.active_goal_node_ids))?,
                     to_json(&scenario.trait_snapshot)?,
+                    scenario
+                        .self_model_snapshot
+                        .as_ref()
+                        .map(to_json)
+                        .transpose()?,
                     to_json(&scenario.predicted_outcomes)?,
                     f64::from(scenario.plausibility_score),
                     f64::from(scenario.novelty_score),
@@ -994,10 +1002,10 @@ impl<'a> StoreRepository<'a> {
         let mut rows = self
             .connection
             .query(
-                "SELECT id, status, title, premise, narrative, basis_source_node_ids_json,
+                "SELECT id, kind, status, title, premise, narrative, basis_source_node_ids_json,
                         basis_lesson_ids_json, active_goal_node_ids_json, trait_snapshot_json,
-                        predicted_outcomes_json, plausibility_score, novelty_score, usefulness_score,
-                        created_at, updated_at
+                        self_model_snapshot_json, predicted_outcomes_json, plausibility_score,
+                        novelty_score, usefulness_score, created_at, updated_at
                  FROM imagined_nodes
                  WHERE id = ?1",
                 params![scenario_id.0.to_string()],
@@ -1017,10 +1025,10 @@ impl<'a> StoreRepository<'a> {
         let mut rows = self
             .connection
             .query(
-                "SELECT id, status, title, premise, narrative, basis_source_node_ids_json,
+                "SELECT id, kind, status, title, premise, narrative, basis_source_node_ids_json,
                         basis_lesson_ids_json, active_goal_node_ids_json, trait_snapshot_json,
-                        predicted_outcomes_json, plausibility_score, novelty_score, usefulness_score,
-                        created_at, updated_at
+                        self_model_snapshot_json, predicted_outcomes_json, plausibility_score,
+                        novelty_score, usefulness_score, created_at, updated_at
                  FROM imagined_nodes
                  ORDER BY updated_at DESC
                  LIMIT ?1",
@@ -1606,7 +1614,8 @@ mod tests {
 
         let scenario = ImaginedScenario {
             id: ScenarioId(Uuid::new_v4()),
-            status: ImaginationStatus::Proposed,
+            kind: memory_core::ImaginedScenarioKind::FutureNeedPrediction,
+            status: ImaginationStatus::Simulated,
             title: "Hypothetical plan".to_owned(),
             premise: "If the agent reuses the basis memory cluster, planning may accelerate."
                 .to_owned(),
@@ -1629,6 +1638,18 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
             }],
+            self_model_snapshot: Some(SelfModel {
+                id: SelfModelId(Uuid::new_v4()),
+                version: 1,
+                recurring_strengths: vec!["Practical and outcome-focused".to_owned()],
+                user_interaction_preferences: vec!["User prefers concise responses".to_owned()],
+                behavioral_tendencies: vec!["Bias toward workable answers".to_owned()],
+                active_domains: vec!["Planning".to_owned()],
+                supporting_lesson_ids: Vec::new(),
+                supporting_trait_ids: Vec::new(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            }),
             predicted_outcomes: vec!["Planning finishes with fewer revisions.".to_owned()],
             plausibility_score: 0.74,
             novelty_score: 0.51,
@@ -1646,9 +1667,14 @@ mod tests {
             .await
             .expect("imagined scenario list should work");
 
-        assert_eq!(saved.status, ImaginationStatus::Proposed);
+        assert_eq!(saved.status, ImaginationStatus::Simulated);
         assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].kind,
+            memory_core::ImaginedScenarioKind::FutureNeedPrediction
+        );
         assert_eq!(listed[0].basis_source_node_ids, vec![basis_node.id]);
+        assert!(listed[0].self_model_snapshot.is_some());
         assert!(
             repository
                 .get_node_by_id(NodeId(saved.id.0))
