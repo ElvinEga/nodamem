@@ -29,10 +29,11 @@ use memory_retrieval::{
     vector::{DeterministicQueryEmbedder, NullVectorSearch, TursoVectorSearch, VectorSearch},
     MemoryQuery, RetrievalEngine, RetrievalError, RetrievalPolicy, RetrievalSource,
 };
-use memory_sleep::SleepMarker;
+use memory_sleep::{EveryNRecallBatches, SleepMarker, SleepPolicy, StoreSleepService};
 use memory_store::StoreMarker;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use tracing::{debug, warn};
 
 use memory_imagination::ImaginationMarker;
 use memory_ingest::IngestMarker;
@@ -270,6 +271,7 @@ pub struct AgentApiService {
     personality_service: PersonalityService,
     imagination_service: ImaginationService,
     vector_search: Box<dyn VectorSearch>,
+    sleep_service: Option<StoreSleepService<EveryNRecallBatches>>,
 }
 
 impl fmt::Debug for AgentApiService {
@@ -282,6 +284,7 @@ impl fmt::Debug for AgentApiService {
             .field("personality_service", &self.personality_service)
             .field("imagination_service", &self.imagination_service)
             .field("vector_search", &"dyn VectorSearch")
+            .field("sleep_service", &self.sleep_service.is_some())
             .finish()
     }
 }
@@ -328,6 +331,7 @@ impl Default for AgentApiService {
             personality_service: PersonalityService::default(),
             imagination_service: ImaginationService::default(),
             vector_search: Box::new(NullVectorSearch),
+            sleep_service: None,
         }
     }
 }
@@ -349,10 +353,78 @@ impl AgentApiService {
 
     #[must_use]
     pub fn new_with_connection(connection: Connection) -> Self {
-        Self::default().with_vector_search(TursoVectorSearch::new(
-            connection,
-            DeterministicQueryEmbedder::default(),
-        ))
+        Self::new_with_store_connections(connection, None)
+    }
+
+    #[must_use]
+    pub fn new_with_store_connections(
+        vector_connection: Connection,
+        maintenance_connection: Option<Connection>,
+    ) -> Self {
+        Self::default()
+            .with_vector_search(TursoVectorSearch::new(
+                vector_connection,
+                DeterministicQueryEmbedder::default(),
+            ))
+            .with_sleep_service(maintenance_connection.map(|connection| {
+                StoreSleepService::new(
+                    connection,
+                    memory_sleep::SleepRunner::default(),
+                    SleepPolicy::default(),
+                    EveryNRecallBatches::default(),
+                )
+            }))
+    }
+
+    #[must_use]
+    pub fn with_sleep_service(
+        mut self,
+        sleep_service: Option<StoreSleepService<EveryNRecallBatches>>,
+    ) -> Self {
+        self.sleep_service = sleep_service;
+        self
+    }
+
+    #[must_use]
+    fn block_on_sleep_service<F>(future: F) -> Result<F::Output, AgentApiError>
+    where
+        F: std::future::Future,
+    {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            Ok(tokio::task::block_in_place(|| handle.block_on(future)))
+        } else {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| AgentApiError::Retrieval(error.to_string()))?;
+            Ok(runtime.block_on(future))
+        }
+    }
+
+    fn record_recall_side_effect(&self, node_ids: &[NodeId]) {
+        let Some(sleep_service) = &self.sleep_service else {
+            return;
+        };
+
+        match Self::block_on_sleep_service(
+            sleep_service.record_recall_and_maybe_run(node_ids, chrono::Utc::now()),
+        ) {
+            Ok(Ok(report)) => {
+                if !report.job_reports.is_empty() {
+                    debug!(
+                        recall_nodes_recorded = report.recall_nodes_recorded,
+                        job_runs = report.job_reports.len(),
+                        "nodamem sleep maintenance ran inline after recall"
+                    );
+                }
+            }
+            Ok(Err(error)) => {
+                warn!(%error, "failed to persist nodamem sleep maintenance side effect");
+            }
+            Err(error) => {
+                warn!(%error, "failed to execute nodamem sleep maintenance side effect");
+            }
+        }
     }
 
     pub fn recall_context(
@@ -378,6 +450,13 @@ impl AgentApiService {
             session_id: request.session_id.clone(),
             topic: request.topic.clone(),
         })?;
+        let recalled_node_ids = retrieved
+            .packet
+            .nodes
+            .iter()
+            .map(|node| node.id)
+            .collect::<Vec<_>>();
+        self.record_recall_side_effect(&recalled_node_ids);
 
         Ok(RecallContextResponse {
             packet: retrieved.packet,
