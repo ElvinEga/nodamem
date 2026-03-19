@@ -53,7 +53,7 @@ pub fn openclaw_tool_descriptions() -> Vec<OpenClawToolDescription> {
             when_to_call: "Call after success, failure, user acceptance, rejection, or prediction mismatch.".to_owned(),
             when_not_to_call: "Do not call before an outcome is known or when the signal is not validated.".to_owned(),
             returns: "Trait update summaries and the count of updated traits.".to_owned(),
-            example_request: json!({"existing_traits":[],"outcome":{"outcome_id":"out-7","subject_node_id":null,"success":false,"usefulness":0.2,"prediction_correct":false,"user_accepted":false,"validated":true}}),
+            example_request: json!({"existing_traits":[],"existing_lessons":[],"existing_self_model":null,"outcome":{"outcome_id":"out-7","subject_node_id":null,"success":false,"usefulness":0.2,"prediction_correct":false,"user_accepted":false,"validated":true}}),
         },
         OpenClawToolDescription {
             name: "generate_imagined_scenarios".to_owned(),
