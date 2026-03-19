@@ -101,7 +101,11 @@ pub fn compact_recall_context(response: RecallContextResponse) -> OpenClawRecall
             .chain(response.related_neighbors)
             .map(OpenClawNodeSummary::from)
             .collect(),
-        lessons: response.lessons.into_iter().map(OpenClawLessonSummary::from).collect(),
+        lessons: response
+            .lessons
+            .into_iter()
+            .map(OpenClawLessonSummary::from)
+            .collect(),
         checkpoint_summary: checkpoint_summary_text(response.checkpoint_summary),
         trait_snapshot: response
             .trait_snapshot
@@ -115,7 +119,11 @@ pub fn compact_recall_context(response: RecallContextResponse) -> OpenClawRecall
 pub fn compact_neighbors(response: GetNeighborsResponse) -> OpenClawGetNeighborsResponse {
     OpenClawGetNeighborsResponse {
         node_id: response.node_id,
-        neighbors: response.neighbors.into_iter().map(OpenClawNodeSummary::from).collect(),
+        neighbors: response
+            .neighbors
+            .into_iter()
+            .map(OpenClawNodeSummary::from)
+            .collect(),
         connection_count: response.connecting_edges.len(),
     }
 }
@@ -152,21 +160,30 @@ pub fn compact_propose_lesson(response: ProposeLessonResponse) -> OpenClawPropos
                     evidence_links,
                 } => OpenClawLessonProposalOutcome::ReinforceExisting {
                     lesson_title: updated_lesson.title,
-                    evidence_node_ids: evidence_links.into_iter().map(|link| link.node_id).collect(),
+                    evidence_node_ids: evidence_links
+                        .into_iter()
+                        .map(|link| link.node_id)
+                        .collect(),
                 },
                 LessonOutcomeDto::RefineExisting {
                     updated_lesson,
                     evidence_links,
                 } => OpenClawLessonProposalOutcome::RefineExisting {
                     lesson_title: updated_lesson.title,
-                    evidence_node_ids: evidence_links.into_iter().map(|link| link.node_id).collect(),
+                    evidence_node_ids: evidence_links
+                        .into_iter()
+                        .map(|link| link.node_id)
+                        .collect(),
                 },
                 LessonOutcomeDto::ContradictionHook {
                     target_lesson_id,
                     evidence_links,
                 } => OpenClawLessonProposalOutcome::ContradictionHook {
                     target_lesson_id,
-                    evidence_node_ids: evidence_links.into_iter().map(|link| link.node_id).collect(),
+                    evidence_node_ids: evidence_links
+                        .into_iter()
+                        .map(|link| link.node_id)
+                        .collect(),
                 },
             })
             .collect(),
@@ -216,18 +233,16 @@ mod tests {
     use memory_ingest::{AdmissionContext, IngestEvent, IngestOutput, MessageEvent};
     use uuid::Uuid;
 
-    use super::{
-        compact_recall_context, OpenClawAdapter,
+    use super::{compact_recall_context, OpenClawAdapter};
+    use crate::adapters::openclaw_types::{
+        OpenClawGenerateImaginedScenariosRequest, OpenClawProposeLessonRequest,
+        OpenClawProposeMemoryRequest, OpenClawRecallContextRequest,
     };
     use crate::{
         AgentApiError, AgentMemoryService, GenerateImaginedScenariosRequest,
         GenerateImaginedScenariosResponse, GetNeighborsRequest, GetNeighborsResponse,
         ProposeLessonRequest, ProposeLessonResponse, ProposeMemoryRequest, ProposeMemoryResponse,
         RecallContextRequest, RecallContextResponse, RecordOutcomeRequest, RecordOutcomeResponse,
-    };
-    use crate::adapters::openclaw_types::{
-        OpenClawGenerateImaginedScenariosRequest, OpenClawProposeLessonRequest,
-        OpenClawProposeMemoryRequest, OpenClawRecallContextRequest,
     };
 
     #[test]
@@ -287,7 +302,10 @@ mod tests {
                 context: AdmissionContext::default(),
             })
             .expect("memory proposal should succeed");
-        assert_eq!(memory_response.decisions[0].action, AdmissionAction::CreateNewNode);
+        assert_eq!(
+            memory_response.decisions[0].action,
+            AdmissionAction::CreateNewNode
+        );
 
         let lesson_response = adapter
             .propose_lesson(OpenClawProposeLessonRequest {
@@ -327,7 +345,10 @@ mod tests {
         }
 
         fn push_call(&self, name: &'static str) {
-            self.calls.lock().expect("calls lock should work").push(name);
+            self.calls
+                .lock()
+                .expect("calls lock should work")
+                .push(name);
         }
     }
 
