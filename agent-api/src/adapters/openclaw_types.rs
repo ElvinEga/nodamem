@@ -42,6 +42,8 @@ pub struct OpenClawProposeLessonRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OpenClawRecordOutcomeRequest {
     pub existing_traits: Vec<memory_core::TraitState>,
+    pub existing_lessons: Vec<memory_core::Lesson>,
+    pub existing_self_model: Option<memory_core::SelfModel>,
     pub outcome: OutcomeRecordDto,
 }
 
@@ -139,6 +141,10 @@ pub enum OpenClawLessonProposalOutcome {
         lesson_title: String,
         evidence_node_ids: Vec<NodeId>,
     },
+    WeakenExisting {
+        lesson_title: String,
+        evidence_node_ids: Vec<NodeId>,
+    },
     ContradictionHook {
         target_lesson_id: memory_core::LessonId,
         evidence_node_ids: Vec<NodeId>,
@@ -216,6 +222,8 @@ impl From<OpenClawRecordOutcomeRequest> for crate::RecordOutcomeRequest {
     fn from(value: OpenClawRecordOutcomeRequest) -> Self {
         Self {
             existing_traits: value.existing_traits,
+            existing_lessons: value.existing_lessons,
+            existing_self_model: value.existing_self_model,
             outcome: value.outcome,
         }
     }
