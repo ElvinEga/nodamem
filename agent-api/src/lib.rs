@@ -112,6 +112,7 @@ pub struct RecallContextRequest {
     pub lessons: Vec<Lesson>,
     pub checkpoints: Vec<Checkpoint>,
     pub traits: Vec<TraitState>,
+    pub self_model_snapshot: Option<SelfModel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -454,6 +455,7 @@ impl AgentApiService {
             lessons: request.lessons.clone(),
             checkpoints: request.checkpoints.clone(),
             traits: request.traits.clone(),
+            self_model: request.self_model_snapshot.clone(),
         };
         let engine = RetrievalEngine::new(source, &*self.vector_search, RetrievalPolicy::default());
         let retrieved = engine.recall_context(&MemoryQuery {
@@ -679,7 +681,8 @@ pub fn tool_descriptions() -> Vec<AgentToolDescription> {
                 "edges": [],
                 "lessons": [],
                 "checkpoints": [],
-                "traits": []
+                "traits": [],
+                "self_model_snapshot": null
             }),
         },
         AgentToolDescription {
@@ -761,6 +764,7 @@ pub fn tool_descriptions() -> Vec<AgentToolDescription> {
                     "edges": [],
                     "lessons": [],
                     "traits": [],
+                    "self_model_snapshot": null,
                     "checkpoints": [],
                     "imagined_scenarios": []
                 },
@@ -819,6 +823,7 @@ struct RequestRetrievalSource {
     lessons: Vec<Lesson>,
     checkpoints: Vec<Checkpoint>,
     traits: Vec<TraitState>,
+    self_model: Option<SelfModel>,
 }
 
 impl RetrievalSource for RequestRetrievalSource {
@@ -840,6 +845,10 @@ impl RetrievalSource for RequestRetrievalSource {
 
     fn current_traits(&self, limit: usize) -> Result<Vec<TraitState>, RetrievalError> {
         Ok(self.traits.iter().take(limit).cloned().collect())
+    }
+
+    fn latest_self_model(&self) -> Result<Option<SelfModel>, RetrievalError> {
+        Ok(self.self_model.clone())
     }
 }
 
@@ -970,6 +979,7 @@ mod tests {
                             lessons: Vec::new(),
                             checkpoints: Vec::new(),
                             traits: Vec::new(),
+                            self_model_snapshot: None,
                         })
                         .expect("request serialization should work")
                         .into(),
@@ -1036,6 +1046,7 @@ mod tests {
                 lessons: Vec::new(),
                 checkpoints: Vec::new(),
                 traits: Vec::new(),
+                self_model_snapshot: None,
             })
             .expect("recall should succeed");
 
