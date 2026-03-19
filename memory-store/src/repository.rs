@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use libsql::{params, Connection};
 use memory_core::{
-    Checkpoint, Edge, ImaginedScenario, Lesson, LessonId, Node, NodeId, ScenarioId, TraitId,
-    TraitState, WorkingMemoryEntry,
+    Checkpoint, Edge, ImaginedScenario, Lesson, LessonId, Node, NodeId, ScenarioId, SelfModel,
+    TraitEvent, TraitId, TraitState, WorkingMemoryEntry,
 };
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -15,10 +15,10 @@ use crate::audit::{LessonAuditTrail, NodeAuditTrail};
 use crate::error::StoreError;
 use crate::mapper::{
     format_edge_type, format_imagination_status, format_lesson_type, format_memory_status,
-    format_node_type, format_optional_timestamp, format_timestamp, format_trait_type,
-    lesson_id_strings, map_checkpoint, map_edge, map_imagined_scenario, map_lesson, map_node,
-    map_trait_state, map_working_memory_entry, node_id_strings, payload_to_json, to_json,
-    trait_id_strings,
+    format_node_type, format_optional_timestamp, format_timestamp, format_trait_change_kind,
+    format_trait_type, lesson_id_strings, map_checkpoint, map_edge, map_imagined_scenario,
+    map_lesson, map_node, map_self_model, map_trait_event, map_trait_state,
+    map_working_memory_entry, node_id_strings, payload_to_json, to_json, trait_id_strings,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,6 +473,170 @@ impl<'a> StoreRepository<'a> {
         self.load_trait_state(trait_state.id)
             .await?
             .ok_or_else(|| missing_row("trait_state", trait_state.id.0))
+    }
+
+    pub async fn append_trait_event(
+        &self,
+        trait_event: &TraitEvent,
+    ) -> Result<TraitEvent, StoreError> {
+        self.connection
+            .execute(
+                "INSERT INTO trait_events (
+                    id, trait_id, event_type, delta, reason, lesson_id, node_id, outcome_id,
+                    trait_type, previous_strength, updated_strength, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    trait_event.id.0.to_string(),
+                    trait_event.trait_id.0.to_string(),
+                    format_trait_change_kind(trait_event.change_kind),
+                    f64::from(trait_event.delta),
+                    trait_event.reason.clone(),
+                    trait_event.lesson_id.map(|id| id.0.to_string()),
+                    trait_event.node_id.map(|id| id.0.to_string()),
+                    trait_event.outcome_id.clone(),
+                    format_trait_type(trait_event.trait_type),
+                    f64::from(trait_event.previous_strength),
+                    f64::from(trait_event.updated_strength),
+                    format_timestamp(trait_event.created_at),
+                    format_timestamp(trait_event.updated_at),
+                ],
+            )
+            .await?;
+
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, trait_id, trait_type, event_type, delta, reason, lesson_id,
+                        node_id, outcome_id, previous_strength, updated_strength, created_at,
+                        updated_at
+                 FROM trait_events
+                 WHERE id = ?1",
+                params![trait_event.id.0.to_string()],
+            )
+            .await?;
+
+        rows.next()
+            .await?
+            .map(|row| map_trait_event(&row))
+            .transpose()?
+            .ok_or_else(|| missing_row("trait_event", trait_event.id.0))
+    }
+
+    pub async fn load_trait_events(
+        &self,
+        trait_id: Option<TraitId>,
+        limit: Option<usize>,
+    ) -> Result<Vec<TraitEvent>, StoreError> {
+        let mut rows = match (trait_id, limit) {
+            (Some(trait_id), Some(limit)) => {
+                self.connection
+                    .query(
+                        "SELECT id, trait_id, trait_type, event_type, delta, reason, lesson_id,
+                                node_id, outcome_id, previous_strength, updated_strength,
+                                created_at, updated_at
+                         FROM trait_events
+                         WHERE trait_id = ?1
+                         ORDER BY created_at DESC
+                         LIMIT ?2",
+                        params![trait_id.0.to_string(), limit as i64],
+                    )
+                    .await?
+            }
+            (Some(trait_id), None) => {
+                self.connection
+                    .query(
+                        "SELECT id, trait_id, trait_type, event_type, delta, reason, lesson_id,
+                                node_id, outcome_id, previous_strength, updated_strength,
+                                created_at, updated_at
+                         FROM trait_events
+                         WHERE trait_id = ?1
+                         ORDER BY created_at DESC",
+                        params![trait_id.0.to_string()],
+                    )
+                    .await?
+            }
+            (None, Some(limit)) => {
+                self.connection
+                    .query(
+                        "SELECT id, trait_id, trait_type, event_type, delta, reason, lesson_id,
+                                node_id, outcome_id, previous_strength, updated_strength,
+                                created_at, updated_at
+                         FROM trait_events
+                         ORDER BY created_at DESC
+                         LIMIT ?1",
+                        params![limit as i64],
+                    )
+                    .await?
+            }
+            (None, None) => {
+                self.connection
+                    .query(
+                        "SELECT id, trait_id, trait_type, event_type, delta, reason, lesson_id,
+                                node_id, outcome_id, previous_strength, updated_strength,
+                                created_at, updated_at
+                         FROM trait_events
+                         ORDER BY created_at DESC",
+                        params![],
+                    )
+                    .await?
+            }
+        };
+
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().await? {
+            events.push(map_trait_event(&row)?);
+        }
+
+        Ok(events)
+    }
+
+    pub async fn save_self_model(&self, self_model: &SelfModel) -> Result<SelfModel, StoreError> {
+        self.connection
+            .execute(
+                "INSERT INTO self_model_snapshots (
+                    id, version, recurring_strengths_json, user_interaction_preferences_json,
+                    behavioral_tendencies_json, active_domains_json, supporting_lesson_ids_json,
+                    supporting_trait_ids_json, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    self_model.id.0.to_string(),
+                    i64::from(self_model.version),
+                    to_json(&self_model.recurring_strengths)?,
+                    to_json(&self_model.user_interaction_preferences)?,
+                    to_json(&self_model.behavioral_tendencies)?,
+                    to_json(&self_model.active_domains)?,
+                    to_json(&lesson_id_strings(&self_model.supporting_lesson_ids))?,
+                    to_json(&trait_id_strings(&self_model.supporting_trait_ids))?,
+                    format_timestamp(self_model.created_at),
+                    format_timestamp(self_model.updated_at),
+                ],
+            )
+            .await?;
+
+        self.load_latest_self_model()
+            .await?
+            .ok_or_else(|| missing_row("self_model_snapshot", self_model.id.0))
+    }
+
+    pub async fn load_latest_self_model(&self) -> Result<Option<SelfModel>, StoreError> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, version, recurring_strengths_json, user_interaction_preferences_json,
+                        behavioral_tendencies_json, active_domains_json,
+                        supporting_lesson_ids_json, supporting_trait_ids_json, created_at,
+                        updated_at
+                 FROM self_model_snapshots
+                 ORDER BY version DESC
+                 LIMIT 1",
+                params![],
+            )
+            .await?;
+
+        rows.next()
+            .await?
+            .map(|row| map_self_model(&row))
+            .transpose()
     }
 
     pub async fn create_checkpoint(
@@ -1162,8 +1326,9 @@ mod tests {
     use chrono::Utc;
     use memory_core::{
         Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, ImaginationStatus, ImaginedScenario,
-        Lesson, LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType, ScenarioId, TraitId,
-        TraitState, TraitType, WorkingMemoryEntry, WorkingMemoryId,
+        Lesson, LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType, ScenarioId, SelfModel,
+        SelfModelId, TraitChangeKind, TraitEvent, TraitEventId, TraitId, TraitState, TraitType,
+        WorkingMemoryEntry, WorkingMemoryId,
     };
     use serde_json::json;
     use uuid::Uuid;
@@ -1287,6 +1452,60 @@ mod tests {
             .expect("trait load should work")
             .expect("trait should exist");
         assert_eq!(loaded_trait.label, "Practical");
+
+        let saved_event = repository
+            .append_trait_event(&TraitEvent {
+                id: TraitEventId(Uuid::new_v4()),
+                trait_id: saved_trait.id,
+                trait_type: TraitType::Practicality,
+                change_kind: TraitChangeKind::Reinforced,
+                delta: 0.04,
+                previous_strength: 0.86,
+                updated_strength: 0.9,
+                reason: "validated success reinforced practicality".to_owned(),
+                outcome_id: Some("outcome-1".to_owned()),
+                lesson_id: Some(saved_lesson.id),
+                node_id: Some(source_node.id),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .await
+            .expect("trait event append should work");
+        assert_eq!(saved_event.outcome_id.as_deref(), Some("outcome-1"));
+
+        let loaded_events = repository
+            .load_trait_events(Some(saved_trait.id), Some(10))
+            .await
+            .expect("trait events should load");
+        assert_eq!(loaded_events.len(), 1);
+        assert_eq!(loaded_events[0].lesson_id, Some(saved_lesson.id));
+
+        let self_model = repository
+            .save_self_model(&SelfModel {
+                id: SelfModelId(Uuid::new_v4()),
+                version: 1,
+                recurring_strengths: vec!["Practical and outcome-focused".to_owned()],
+                user_interaction_preferences: vec!["User prefers concise responses".to_owned()],
+                behavioral_tendencies: vec!["Bias toward workable answers".to_owned()],
+                active_domains: vec!["Release".to_owned()],
+                supporting_lesson_ids: vec![saved_lesson.id],
+                supporting_trait_ids: vec![saved_trait.id],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .await
+            .expect("self-model save should work");
+        assert_eq!(self_model.version, 1);
+
+        let latest_self_model = repository
+            .load_latest_self_model()
+            .await
+            .expect("self-model should load")
+            .expect("self-model should exist");
+        assert_eq!(
+            latest_self_model.user_interaction_preferences,
+            vec!["User prefers concise responses".to_owned()]
+        );
 
         repository
             .create_checkpoint(&Checkpoint {
