@@ -7,6 +7,7 @@ use memory_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::collections::HashSet;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -86,6 +87,19 @@ pub struct AdmissionContext {
 /// Best available duplicate or near-duplicate match for a candidate memory.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DuplicateMatch {
+    pub node_id: NodeId,
+    pub similarity: f32,
+    pub duplicate_kind: DuplicateKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuplicateKind {
+    Exact,
+    NearDuplicate,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SupersessionMatch {
     pub node_id: NodeId,
     pub similarity: f32,
 }
@@ -270,6 +284,11 @@ impl DuplicateDetector for DeterministicDuplicateDetector {
                 (similarity >= 0.65).then_some(DuplicateMatch {
                     node_id: existing.id,
                     similarity,
+                    duplicate_kind: if similarity >= 0.9 {
+                        DuplicateKind::Exact
+                    } else {
+                        DuplicateKind::NearDuplicate
+                    },
                 })
             })
             .max_by(|left, right| left.similarity.total_cmp(&right.similarity))
@@ -327,12 +346,28 @@ where
         context: &AdmissionContext,
     ) -> AdmissionDecision {
         let duplicate = self.duplicate_detector.find_duplicate(candidate, context);
+        let superseded = find_superseded_preference_or_goal(candidate, context);
         let score = build_admission_score(candidate, output, context, duplicate.as_ref());
         let connected_enough = score.connectedness >= self.policy.min_connectedness;
         let root_worthy = score.importance >= self.policy.min_root_importance;
         let total_enough = score.total >= self.policy.min_total_score;
 
-        let (action, matched_node_id, reason) = if let Some(match_result) = duplicate.as_ref() {
+        let (action, matched_node_id, reason) = if is_low_value_candidate(candidate, output, &score)
+        {
+            (
+                AdmissionAction::Reject,
+                None,
+                "filtered as low-value memory before durable write".to_owned(),
+            )
+        } else if let Some(match_result) = superseded.as_ref() {
+            (
+                AdmissionAction::SupersedeExistingNode {
+                    target_node_id: match_result.node_id,
+                },
+                Some(match_result.node_id),
+                "supersedes older preference or goal with stronger refined evidence".to_owned(),
+            )
+        } else if let Some(match_result) = duplicate.as_ref() {
             if match_result.similarity >= self.policy.merge_similarity_threshold {
                 (
                     AdmissionAction::MergeIntoExistingNode {
@@ -390,10 +425,21 @@ where
                 .as_ref()
                 .map(|match_result| match_result.similarity)
                 .unwrap_or_default();
+            let duplicate_kind = duplicate
+                .as_ref()
+                .map(|match_result| {
+                    format!("{:?}", match_result.duplicate_kind).to_ascii_lowercase()
+                })
+                .unwrap_or_else(|| "none".to_owned());
+            let superseded_node_id = superseded
+                .as_ref()
+                .map(|match_result| match_result.node_id.0.to_string());
             info!(
                 candidate_node_id = %candidate.id.0,
+                node_type = ?candidate.node_type,
                 action = ?decision.action,
                 matched_node_id = ?decision.matched_node_id.map(|id| id.0.to_string()),
+                superseded_node_id,
                 connectedness = decision.score.connectedness,
                 usefulness = decision.score.usefulness,
                 recurrence = decision.score.recurrence,
@@ -401,6 +447,7 @@ where
                 importance = decision.score.importance,
                 total = decision.score.total,
                 duplicate_similarity,
+                duplicate_kind = %duplicate_kind,
                 reason = %decision.reason,
                 "evaluated memory admission candidate"
             );
@@ -435,22 +482,23 @@ fn event_kind(event: &IngestEvent) -> &'static str {
 
 fn build_candidate_nodes(event: &IngestEvent) -> Vec<Node> {
     let now = Utc::now();
+    let lower = event_text(event).to_ascii_lowercase();
     let (node_type, title, summary, content, source_event_id, tags) = match event {
         IngestEvent::UserMessage(message) => (
-            NodeType::Episodic,
-            "user_message".to_owned(),
+            classify_message_node_type(&lower, true),
+            classify_message_title(&lower, true),
             sentence_summary(&message.text),
             Some(message.text.clone()),
             Some(message.event_id.clone()),
-            vec!["user".to_owned(), "conversation".to_owned()],
+            classify_message_tags(&lower, true),
         ),
         IngestEvent::AssistantMessage(message) => (
-            NodeType::Episodic,
-            "assistant_message".to_owned(),
+            classify_message_node_type(&lower, false),
+            classify_message_title(&lower, false),
             sentence_summary(&message.text),
             Some(message.text.clone()),
             Some(message.event_id.clone()),
-            vec!["assistant".to_owned(), "conversation".to_owned()],
+            classify_message_tags(&lower, false),
         ),
         IngestEvent::ToolResult(tool_result) => (
             NodeType::Semantic,
@@ -592,6 +640,18 @@ fn importance_from_text(text: &str, base: f32) -> f32 {
     if lower.contains("remember") || lower.contains("should") {
         score += 0.1;
     }
+    if has_any(
+        &lower,
+        &["prefer", "preference", "goal", "want", "need", "plan to"],
+    ) {
+        score += 0.08;
+    }
+    if has_any(
+        &lower,
+        &["always", "never", "instead", "rather than", "no longer"],
+    ) {
+        score += 0.06;
+    }
 
     score.clamp(0.0, 1.0)
 }
@@ -668,6 +728,97 @@ fn event_text(event: &IngestEvent) -> &str {
         IngestEvent::UserMessage(message) | IngestEvent::AssistantMessage(message) => &message.text,
         IngestEvent::ToolResult(tool_result) => &tool_result.content_text,
         IngestEvent::SystemEvent(system_event) => &system_event.description,
+    }
+}
+
+fn classify_message_node_type(lower: &str, from_user: bool) -> NodeType {
+    if is_preference_statement(lower, from_user) {
+        NodeType::Preference
+    } else if is_goal_statement(lower, from_user) {
+        NodeType::Goal
+    } else if from_user {
+        NodeType::Episodic
+    } else {
+        NodeType::Semantic
+    }
+}
+
+fn classify_message_title(lower: &str, from_user: bool) -> String {
+    match classify_message_node_type(lower, from_user) {
+        NodeType::Preference => "user_preference".to_owned(),
+        NodeType::Goal => "active_goal".to_owned(),
+        NodeType::Episodic => "user_message".to_owned(),
+        NodeType::Semantic => "assistant_memory".to_owned(),
+        _ => "message_memory".to_owned(),
+    }
+}
+
+fn classify_message_tags(lower: &str, from_user: bool) -> Vec<String> {
+    let mut tags = vec![if from_user { "user" } else { "assistant" }.to_owned()];
+    if is_preference_statement(lower, from_user) {
+        tags.push("preference".to_owned());
+    }
+    if is_goal_statement(lower, from_user) {
+        tags.push("goal".to_owned());
+    }
+    if has_any(lower, &["remember", "should", "learned", "best practice"]) {
+        tags.push("durable".to_owned());
+    }
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
+fn is_preference_statement(lower: &str, from_user: bool) -> bool {
+    if from_user {
+        has_any(
+            lower,
+            &[
+                "i prefer",
+                "i like",
+                "i dislike",
+                "i no longer prefer",
+                "my preference",
+            ],
+        )
+    } else {
+        has_any(
+            lower,
+            &[
+                "user prefers",
+                "user no longer prefers",
+                "user preference",
+                "the user prefers",
+                "the user no longer prefers",
+                "the user wants",
+                "the user dislikes",
+            ],
+        )
+    }
+}
+
+fn is_goal_statement(lower: &str, from_user: bool) -> bool {
+    if from_user {
+        has_any(
+            lower,
+            &[
+                "my goal",
+                "i plan to",
+                "i'm trying to",
+                "i am trying to",
+                "i want to",
+            ],
+        )
+    } else {
+        has_any(
+            lower,
+            &[
+                "user goal",
+                "the user goal",
+                "the user plans to",
+                "the user is trying to",
+            ],
+        )
     }
 }
 
@@ -802,16 +953,23 @@ fn similarity_score(candidate: &Node, existing: &Node) -> f32 {
         .filter(|term| existing_terms.contains(*term))
         .count() as f32;
     let denominator = candidate_terms.len().max(existing_terms.len()) as f32;
+    let title_bonus = if normalize_for_similarity(&candidate.title)
+        == normalize_for_similarity(&existing.title)
+    {
+        0.2
+    } else {
+        0.0
+    };
 
-    (overlap / denominator).clamp(0.0, 1.0)
+    ((overlap / denominator) + title_bonus).clamp(0.0, 1.0)
 }
 
 fn normalized_terms(node: &Node) -> Vec<String> {
     let mut terms = Vec::new();
-    terms.extend(split_terms(&node.title));
-    terms.extend(split_terms(&node.summary));
+    terms.extend(split_similarity_terms(&node.title));
+    terms.extend(split_similarity_terms(&node.summary));
     if let Some(content) = &node.content {
-        terms.extend(split_terms(content));
+        terms.extend(split_similarity_terms(content));
     }
     terms.sort();
     terms.dedup();
@@ -826,6 +984,150 @@ fn split_terms(text: &str) -> Vec<String> {
         })
         .filter(|term| term.len() > 2)
         .collect()
+}
+
+fn split_similarity_terms(text: &str) -> Vec<String> {
+    split_terms(text)
+        .into_iter()
+        .map(|term| canonical_similarity_token(&term))
+        .filter(|term| term.len() > 2)
+        .collect()
+}
+
+fn canonical_similarity_token(term: &str) -> String {
+    match term {
+        "prefers" | "prefer" | "preferred" => "preference".to_owned(),
+        "wants" | "wanted" => "want".to_owned(),
+        "goals" => "goal".to_owned(),
+        "likes" | "liked" => "like".to_owned(),
+        "dislikes" | "disliked" => "dislike".to_owned(),
+        _ => term.to_owned(),
+    }
+}
+
+fn is_low_value_candidate(candidate: &Node, output: &IngestOutput, score: &AdmissionScore) -> bool {
+    if matches!(candidate.node_type, NodeType::Preference | NodeType::Goal) {
+        return false;
+    }
+
+    let content = candidate.content.as_deref().unwrap_or(&candidate.summary);
+    let lower = content.to_ascii_lowercase();
+    let short = split_terms(content).len() <= 4;
+    let no_links = output
+        .candidate_edges
+        .iter()
+        .all(|edge| edge.from_node_id != candidate.id && edge.to_node_id != candidate.id);
+
+    short
+        && no_links
+        && score.total < 0.55
+        && !has_any(
+            &lower,
+            &[
+                "remember",
+                "should",
+                "prefer",
+                "preference",
+                "goal",
+                "important",
+                "failed",
+                "error",
+            ],
+        )
+}
+
+fn find_superseded_preference_or_goal(
+    candidate: &Node,
+    context: &AdmissionContext,
+) -> Option<SupersessionMatch> {
+    if !matches!(candidate.node_type, NodeType::Preference | NodeType::Goal) {
+        return None;
+    }
+
+    let candidate_signature = preference_goal_signature(candidate);
+    if candidate_signature.is_empty() {
+        return None;
+    }
+    let candidate_polarity = polarity_bucket(candidate);
+
+    context
+        .existing_nodes
+        .iter()
+        .filter(|existing| existing.status != MemoryStatus::Archived)
+        .filter(|existing| existing.node_type == candidate.node_type)
+        .filter_map(|existing| {
+            let existing_signature = preference_goal_signature(existing);
+            let overlap = signature_overlap(&candidate_signature, &existing_signature);
+            if overlap < 0.45 || polarity_bucket(existing) == candidate_polarity {
+                return None;
+            }
+
+            Some(SupersessionMatch {
+                node_id: existing.id,
+                similarity: overlap,
+            })
+        })
+        .max_by(|left, right| left.similarity.total_cmp(&right.similarity))
+}
+
+fn preference_goal_signature(node: &Node) -> HashSet<String> {
+    normalized_terms(node)
+        .into_iter()
+        .filter(|term| {
+            !matches!(
+                term.as_str(),
+                "user"
+                    | "the"
+                    | "them"
+                    | "keep"
+                    | "instead"
+                    | "longer"
+                    | "assistant"
+                    | "remember"
+                    | "preference"
+                    | "goal"
+                    | "want"
+                    | "like"
+                    | "dislike"
+                    | "need"
+                    | "plan"
+            )
+        })
+        .collect()
+}
+
+fn signature_overlap(left: &HashSet<String>, right: &HashSet<String>) -> f32 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+
+    let overlap = left.iter().filter(|term| right.contains(*term)).count() as f32;
+    let denominator = left.len().max(right.len()) as f32;
+    (overlap / denominator).clamp(0.0, 1.0)
+}
+
+fn polarity_bucket(node: &Node) -> &'static str {
+    let lower = node
+        .content
+        .as_deref()
+        .unwrap_or(&node.summary)
+        .to_ascii_lowercase();
+    if has_any(
+        &lower,
+        &["do not", "don't", "avoid", "dislike", "no longer", "stop"],
+    ) {
+        "negative"
+    } else {
+        "positive"
+    }
+}
+
+fn has_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn normalize_for_similarity(text: &str) -> String {
+    split_similarity_terms(text).join(" ")
 }
 
 /// Marker preserved for lightweight crate composition.
@@ -988,5 +1290,91 @@ mod tests {
         assert!(decisions
             .iter()
             .any(|decision| decision.score.connectedness > 0.0));
+    }
+
+    #[test]
+    fn rejects_duplicate_memory_proposals_early() {
+        let pipeline = IngestPipeline::new();
+        let output = pipeline.ingest(&IngestEvent::AssistantMessage(MessageEvent {
+            event_id: "evt-duplicate".to_owned(),
+            session_id: Some("session-dup".to_owned()),
+            message_id: None,
+            text: "Remember that the user prefers concise release notes.".to_owned(),
+        }));
+
+        let existing = Node {
+            id: NodeId(Uuid::new_v4()),
+            node_type: NodeType::Preference,
+            status: MemoryStatus::Active,
+            title: "user_preference".to_owned(),
+            summary: "Remember that the user prefers concise release notes.".to_owned(),
+            content: Some("Remember that the user prefers concise release notes.".to_owned()),
+            tags: vec!["preference".to_owned(), "user".to_owned()],
+            confidence: 0.9,
+            importance: 0.9,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_accessed_at: None,
+            source_event_id: Some("seed-dup".to_owned()),
+        };
+
+        let decisions = AdmissionEngine::default().evaluate(
+            &output,
+            &AdmissionContext {
+                existing_nodes: vec![existing.clone()],
+                existing_edges: Vec::new(),
+            },
+        );
+
+        assert!(decisions.iter().any(|decision| {
+            matches!(
+                decision.action,
+                AdmissionAction::MergeIntoExistingNode { target_node_id }
+                if target_node_id == existing.id
+            )
+        }));
+    }
+
+    #[test]
+    fn supersedes_conflicting_preference_updates() {
+        let pipeline = IngestPipeline::new();
+        let output = pipeline.ingest(&IngestEvent::UserMessage(MessageEvent {
+            event_id: "evt-preference-update".to_owned(),
+            session_id: Some("session-pref".to_owned()),
+            message_id: None,
+            text: "I no longer prefer verbose release notes; keep them concise instead.".to_owned(),
+        }));
+
+        let existing = Node {
+            id: NodeId(Uuid::new_v4()),
+            node_type: NodeType::Preference,
+            status: MemoryStatus::Active,
+            title: "user_preference".to_owned(),
+            summary: "The user prefers verbose release notes.".to_owned(),
+            content: Some("The user prefers verbose release notes.".to_owned()),
+            tags: vec!["preference".to_owned(), "user".to_owned()],
+            confidence: 0.7,
+            importance: 0.8,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_accessed_at: None,
+            source_event_id: Some("seed-pref".to_owned()),
+        };
+
+        let decisions = AdmissionEngine::default().evaluate(
+            &output,
+            &AdmissionContext {
+                existing_nodes: vec![existing.clone()],
+                existing_edges: Vec::new(),
+            },
+        );
+
+        assert!(decisions.iter().any(|decision| {
+            matches!(
+                decision.action,
+                AdmissionAction::SupersedeExistingNode { target_node_id }
+                if target_node_id == existing.id
+            )
+        }));
     }
 }
