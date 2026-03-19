@@ -7,7 +7,7 @@ use memory_core::{
 use uuid::Uuid;
 
 use crate::rerank::HybridCandidate;
-use crate::{MemoryQuery, RetrievedMemoryPacket, RetrievalPolicy};
+use crate::{MemoryQuery, RetrievalPolicy, RetrievedMemoryPacket};
 
 pub fn assemble_memory_packet(
     query: &MemoryQuery,
@@ -26,7 +26,10 @@ pub fn assemble_memory_packet(
         .map(|candidate| candidate.node.clone())
         .collect::<Vec<_>>();
 
-    let core_ids = core_nodes.iter().map(|node| node.id).collect::<HashSet<_>>();
+    let core_ids = core_nodes
+        .iter()
+        .map(|node| node.id)
+        .collect::<HashSet<_>>();
     let related_neighbors = ranked
         .iter()
         .filter(|candidate| !core_ids.contains(&candidate.node.id))
