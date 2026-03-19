@@ -33,6 +33,16 @@ pub struct TraitId(pub Uuid);
 #[serde(transparent)]
 pub struct CheckpointId(pub Uuid);
 
+/// Stable identifier for a self-model snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SelfModelId(pub Uuid);
+
+/// Stable identifier for an auditable trait update event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TraitEventId(pub Uuid);
+
 /// Stable identifier for a hypothetical imagined scenario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -100,7 +110,7 @@ pub enum LessonType {
 }
 
 /// Category for a longer-lived personality tendency, kept separate from lessons and memories.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TraitType {
     Curiosity,
@@ -208,6 +218,48 @@ pub struct TraitState {
     pub updated_at: Timestamp,
 }
 
+/// Auditable event describing one gradual trait update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraitChangeKind {
+    Reinforced,
+    Weakened,
+    Stable,
+}
+
+/// Durable audit record for a trait update driven by validated outcomes and stable lessons.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TraitEvent {
+    pub id: TraitEventId,
+    pub trait_id: TraitId,
+    pub trait_type: TraitType,
+    pub change_kind: TraitChangeKind,
+    pub delta: f32,
+    pub previous_strength: f32,
+    pub updated_strength: f32,
+    pub reason: String,
+    pub outcome_id: Option<String>,
+    pub lesson_id: Option<LessonId>,
+    pub node_id: Option<NodeId>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+/// Slow-moving self-model kept separate from raw memories, lessons, and prompt-facing recall.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SelfModel {
+    pub id: SelfModelId,
+    pub version: u32,
+    pub recurring_strengths: Vec<String>,
+    pub user_interaction_preferences: Vec<String>,
+    pub behavioral_tendencies: Vec<String>,
+    pub active_domains: Vec<String>,
+    pub supporting_lesson_ids: Vec<LessonId>,
+    pub supporting_trait_ids: Vec<TraitId>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
 /// Summary node capturing the state of a time window, topic cluster, or task period.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -282,6 +334,7 @@ pub enum AdmissionAction {
     CreateNewNode,
     MergeIntoExistingNode { target_node_id: NodeId },
     AttachAsEvidence { target_node_id: NodeId },
+    SupersedeExistingNode { target_node_id: NodeId },
     Reject,
 }
 
