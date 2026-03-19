@@ -4,8 +4,9 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use libsql::Row;
 use memory_core::{
     Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, ImaginationStatus, ImaginedScenario, Lesson,
-    LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType, ScenarioId, Timestamp, TraitId,
-    TraitState, TraitType, WorkingMemoryEntry, WorkingMemoryId,
+    LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType, ScenarioId, SelfModel, SelfModelId,
+    Timestamp, TraitChangeKind, TraitEvent, TraitEventId, TraitId, TraitState, TraitType,
+    WorkingMemoryEntry, WorkingMemoryId,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -108,6 +109,68 @@ pub fn map_checkpoint(row: &Row) -> Result<Checkpoint, StoreError> {
         )?,
         created_at: parse_timestamp(&row.get::<String>(7)?)?,
         updated_at: parse_timestamp(&row.get::<String>(8)?)?,
+    })
+}
+
+pub fn map_trait_event(row: &Row) -> Result<TraitEvent, StoreError> {
+    Ok(TraitEvent {
+        id: TraitEventId(parse_uuid(row.get::<String>(0)?, "trait_events.id")?),
+        trait_id: TraitId(parse_uuid(row.get::<String>(1)?, "trait_events.trait_id")?),
+        trait_type: parse_trait_type(&row.get::<String>(2)?)?,
+        change_kind: parse_trait_change_kind(&row.get::<String>(3)?)?,
+        delta: row.get::<f64>(4)? as f32,
+        reason: row.get(5)?,
+        lesson_id: row
+            .get::<Option<String>>(6)?
+            .map(|value| parse_uuid(value, "trait_events.lesson_id").map(LessonId))
+            .transpose()?,
+        node_id: row
+            .get::<Option<String>>(7)?
+            .map(|value| parse_uuid(value, "trait_events.node_id").map(NodeId))
+            .transpose()?,
+        outcome_id: row.get(8)?,
+        previous_strength: row.get::<f64>(9)? as f32,
+        updated_strength: row.get::<f64>(10)? as f32,
+        created_at: parse_timestamp(&row.get::<String>(11)?)?,
+        updated_at: parse_timestamp(&row.get::<String>(12)?)?,
+    })
+}
+
+pub fn map_self_model(row: &Row) -> Result<SelfModel, StoreError> {
+    Ok(SelfModel {
+        id: SelfModelId(parse_uuid(
+            row.get::<String>(0)?,
+            "self_model_snapshots.id",
+        )?),
+        version: row.get::<i64>(1)? as u32,
+        recurring_strengths: parse_json(
+            &row.get::<String>(2)?,
+            "self_model_snapshots.recurring_strengths_json",
+        )?,
+        user_interaction_preferences: parse_json(
+            &row.get::<String>(3)?,
+            "self_model_snapshots.user_interaction_preferences_json",
+        )?,
+        behavioral_tendencies: parse_json(
+            &row.get::<String>(4)?,
+            "self_model_snapshots.behavioral_tendencies_json",
+        )?,
+        active_domains: parse_json(
+            &row.get::<String>(5)?,
+            "self_model_snapshots.active_domains_json",
+        )?,
+        supporting_lesson_ids: parse_id_list(
+            &row.get::<String>(6)?,
+            "self_model_snapshots.supporting_lesson_ids_json",
+            LessonId,
+        )?,
+        supporting_trait_ids: parse_id_list(
+            &row.get::<String>(7)?,
+            "self_model_snapshots.supporting_trait_ids_json",
+            TraitId,
+        )?,
+        created_at: parse_timestamp(&row.get::<String>(8)?)?,
+        updated_at: parse_timestamp(&row.get::<String>(9)?)?,
     })
 }
 
@@ -217,6 +280,14 @@ pub fn format_trait_type(value: TraitType) -> &'static str {
         TraitType::Reliability => "reliability",
         TraitType::Practicality => "practicality",
         TraitType::Proactivity => "proactivity",
+    }
+}
+
+pub fn format_trait_change_kind(value: TraitChangeKind) -> &'static str {
+    match value {
+        TraitChangeKind::Reinforced => "reinforced",
+        TraitChangeKind::Weakened => "weakened",
+        TraitChangeKind::Stable => "stable",
     }
 }
 
@@ -342,6 +413,18 @@ pub fn parse_trait_type(value: &str) -> Result<TraitType, StoreError> {
         "proactivity" => Ok(TraitType::Proactivity),
         _ => Err(StoreError::InvalidValue {
             field: "trait_type",
+            value: value.to_owned(),
+        }),
+    }
+}
+
+pub fn parse_trait_change_kind(value: &str) -> Result<TraitChangeKind, StoreError> {
+    match value {
+        "reinforced" => Ok(TraitChangeKind::Reinforced),
+        "weakened" => Ok(TraitChangeKind::Weakened),
+        "stable" => Ok(TraitChangeKind::Stable),
+        _ => Err(StoreError::InvalidValue {
+            field: "trait_change_kind",
             value: value.to_owned(),
         }),
     }
