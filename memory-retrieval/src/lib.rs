@@ -10,7 +10,9 @@
 use std::error::Error as StdError;
 use std::fmt;
 
-use memory_core::{Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, Node, NodeId, TraitState};
+use memory_core::{
+    Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, Node, NodeId, SelfModel, TraitState,
+};
 use memory_store::StoreMarker;
 use tracing::debug;
 
@@ -128,6 +130,7 @@ pub trait RetrievalSource {
     fn all_lessons(&self) -> Result<Vec<Lesson>, RetrievalError>;
     fn recent_checkpoints(&self, limit: usize) -> Result<Vec<Checkpoint>, RetrievalError>;
     fn current_traits(&self, limit: usize) -> Result<Vec<TraitState>, RetrievalError>;
+    fn latest_self_model(&self) -> Result<Option<SelfModel>, RetrievalError>;
 }
 
 /// Retrieval engine that combines lexical BM25, vector retrieval, graph expansion, and reranking.
@@ -170,6 +173,7 @@ where
         let lessons = self.source.all_lessons()?;
         let checkpoints = self.source.recent_checkpoints(1)?;
         let traits = self.source.current_traits(1)?;
+        let self_model_snapshot = self.source.latest_self_model()?;
 
         debug!(
             query_terms = query.text.split_whitespace().count(),
@@ -178,6 +182,7 @@ where
             lesson_count = lessons.len(),
             checkpoint_count = checkpoints.len(),
             trait_count = traits.len(),
+            has_self_model = self_model_snapshot.is_some(),
             "retrieval source inputs loaded"
         );
 
@@ -230,6 +235,7 @@ where
             &lessons,
             checkpoints.into_iter().next(),
             traits.into_iter().next(),
+            self_model_snapshot,
             &ranked,
             &self.policy,
         ))
@@ -265,7 +271,8 @@ mod tests {
     use chrono::{Duration, Utc};
     use memory_core::{
         Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, Lesson, LessonId, LessonType,
-        MemoryStatus, Node, NodeId, NodeType, TraitId, TraitState, TraitType,
+        MemoryStatus, Node, NodeId, NodeType, SelfModel, SelfModelId, TraitId, TraitState,
+        TraitType,
     };
     use memory_store::{NodeEmbeddingRecord, StoreConfig, StoreRuntime};
     use tempfile::tempdir;
@@ -286,6 +293,7 @@ mod tests {
         lessons: Vec<Lesson>,
         checkpoints: Vec<Checkpoint>,
         traits: Vec<TraitState>,
+        self_model: Option<SelfModel>,
     }
 
     impl RetrievalSource for TestSource {
@@ -307,6 +315,10 @@ mod tests {
 
         fn current_traits(&self, limit: usize) -> Result<Vec<TraitState>, RetrievalError> {
             Ok(self.traits.iter().take(limit).cloned().collect())
+        }
+
+        fn latest_self_model(&self) -> Result<Option<SelfModel>, RetrievalError> {
+            Ok(self.self_model.clone())
         }
     }
 
@@ -721,6 +733,18 @@ mod tests {
                 created_at: now,
                 updated_at: now,
             }],
+            self_model: Some(SelfModel {
+                id: SelfModelId(Uuid::new_v4()),
+                version: 1,
+                recurring_strengths: vec!["Practical and outcome-focused".to_owned()],
+                user_interaction_preferences: vec!["User prefers concise responses".to_owned()],
+                behavioral_tendencies: vec!["Bias toward workable answers".to_owned()],
+                active_domains: vec!["Architecture".to_owned(), "Release".to_owned()],
+                supporting_lesson_ids: Vec::new(),
+                supporting_trait_ids: Vec::new(),
+                created_at: now,
+                updated_at: now,
+            }),
         }
     }
 
