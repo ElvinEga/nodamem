@@ -6,6 +6,7 @@ version.workspace = true
 
 [dependencies]
 axum = "0.6"
+libsql = "0.9"
 memory-core = { path = "../memory-core" }
 memory-imagination = { path = "../memory-imagination" }
 memory-ingest = { path = "../memory-ingest" }
@@ -19,6 +20,7 @@ serde_json = "1"
 
 [dev-dependencies]
 chrono = "0.4"
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tower = "0.4"
 uuid = "1"
