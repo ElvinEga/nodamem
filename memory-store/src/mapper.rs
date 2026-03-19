@@ -3,9 +3,9 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
 use libsql::Row;
 use memory_core::{
-    Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, ImaginedScenario, ImaginationStatus,
-    Lesson, LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType, ScenarioId, Timestamp,
-    TraitId, TraitState, TraitType, WorkingMemoryEntry, WorkingMemoryId,
+    Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, ImaginationStatus, ImaginedScenario, Lesson,
+    LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType, ScenarioId, Timestamp, TraitId,
+    TraitState, TraitType, WorkingMemoryEntry, WorkingMemoryId,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
