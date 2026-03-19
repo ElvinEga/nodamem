@@ -1,8 +1,6 @@
-use memory_core::{
-    AdmissionDecision, Checkpoint, LessonType, NodeId, TraitType,
-};
-use memory_ingest::IngestEvent;
+use memory_core::{AdmissionDecision, Checkpoint, LessonType, NodeId, TraitType};
 use memory_ingest::AdmissionContext;
+use memory_ingest::IngestEvent;
 use serde::{Deserialize, Serialize};
 
 use crate::{
