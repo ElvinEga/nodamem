@@ -146,6 +146,15 @@ pub enum ImaginationStatus {
     Rejected,
 }
 
+/// Scenario family for different types of grounded hypothetical reasoning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImaginedScenarioKind {
+    FutureNeedPrediction,
+    AlternativePlan,
+    Counterfactual,
+}
+
 /// Durable graph node for memory, entities, goals, or other governed knowledge records.
 ///
 /// Even though `NodeType` includes `Imagined`, callers should expose imagined content through
@@ -281,6 +290,7 @@ pub struct Checkpoint {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImaginedScenario {
     pub id: ScenarioId,
+    pub kind: ImaginedScenarioKind,
     pub status: ImaginationStatus,
     pub title: String,
     pub premise: String,
@@ -289,6 +299,7 @@ pub struct ImaginedScenario {
     pub basis_lesson_ids: Vec<LessonId>,
     pub active_goal_node_ids: Vec<NodeId>,
     pub trait_snapshot: Vec<TraitState>,
+    pub self_model_snapshot: Option<SelfModel>,
     pub predicted_outcomes: Vec<String>,
     pub plausibility_score: f32,
     pub novelty_score: f32,
@@ -310,6 +321,7 @@ pub struct MemoryPacket {
     pub edges: Vec<Edge>,
     pub lessons: Vec<Lesson>,
     pub traits: Vec<TraitState>,
+    pub self_model_snapshot: Option<SelfModel>,
     pub checkpoints: Vec<Checkpoint>,
     pub imagined_scenarios: Vec<ImaginedScenario>,
 }
