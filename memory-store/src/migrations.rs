@@ -77,6 +77,16 @@ const MIGRATIONS: &[Migration] = &[
         name: "node_recall_stats",
         sql: include_str!("../migrations/0012_node_recall_stats.sql"),
     },
+    Migration {
+        version: "0013",
+        name: "self_model_snapshots",
+        sql: include_str!("../migrations/0013_self_model_snapshots.sql"),
+    },
+    Migration {
+        version: "0014",
+        name: "trait_events_audit_fields",
+        sql: include_str!("../migrations/0014_trait_events_audit_fields.sql"),
+    },
 ];
 
 pub async fn run_migrations(connection: &Connection) -> Result<(), StoreError> {
