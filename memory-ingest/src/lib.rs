@@ -134,7 +134,10 @@ impl IngestPipeline {
     }
 
     pub fn ingest(&self, event: &IngestEvent) -> IngestOutput {
-        debug!(event_kind = event_kind(event), "ingesting event into candidate memory objects");
+        debug!(
+            event_kind = event_kind(event),
+            "ingesting event into candidate memory objects"
+        );
         self.extract(event)
     }
 }
