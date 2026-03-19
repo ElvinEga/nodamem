@@ -21,7 +21,7 @@ pub fn openclaw_tool_descriptions() -> Vec<OpenClawToolDescription> {
             when_to_call: "Call before answering when prior context, ongoing projects, or stable preferences may matter.".to_owned(),
             when_not_to_call: "Do not call for trivial one-off responses where no prior context is relevant.".to_owned(),
             returns: "Compact summaries of verified nodes, lessons, an optional checkpoint summary, and a trait snapshot.".to_owned(),
-            example_request: json!({"text":"Continue the architecture discussion","session_id":"session-7","topic":"architecture","nodes":[],"edges":[],"lessons":[],"checkpoints":[],"traits":[]}),
+            example_request: json!({"text":"Continue the architecture discussion","session_id":"session-7","topic":"architecture","nodes":[],"edges":[],"lessons":[],"checkpoints":[],"traits":[],"self_model_snapshot":null}),
         },
         OpenClawToolDescription {
             name: "get_neighbors".to_owned(),
@@ -61,7 +61,7 @@ pub fn openclaw_tool_descriptions() -> Vec<OpenClawToolDescription> {
             when_to_call: "Call when planning or forecasting would benefit from speculative alternatives.".to_owned(),
             when_not_to_call: "Do not call when verified facts are sufficient or when the result might be mistaken for established memory.".to_owned(),
             returns: "Hypothetical scenarios explicitly labeled as non-verified.".to_owned(),
-            example_request: json!({"planning_task":"Plan the next release","desired_scenarios":2,"context_packet":{"id":"00000000-0000-0000-0000-000000000000","request_id":null,"created_at":"2026-01-01T00:00:00Z","nodes":[],"edges":[],"lessons":[],"traits":[],"checkpoints":[],"imagined_scenarios":[]},"active_goal_node_ids":[]}),
+            example_request: json!({"planning_task":"Plan the next release","desired_scenarios":2,"context_packet":{"id":"00000000-0000-0000-0000-000000000000","request_id":null,"created_at":"2026-01-01T00:00:00Z","nodes":[],"edges":[],"lessons":[],"traits":[],"self_model_snapshot":null,"checkpoints":[],"imagined_scenarios":[]},"active_goal_node_ids":[]}),
         },
     ]
 }
