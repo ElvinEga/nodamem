@@ -10,16 +10,14 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use memory_core::{
-    Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, Node, NodeId, TraitState,
-};
+use memory_core::{Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, Node, NodeId, TraitState};
+use memory_imagination::PlanningImaginationRequest;
 pub use memory_imagination::{
     ImaginationError, ImaginationPolicy, ImaginationService, PlanningImaginationApi,
 };
-use memory_imagination::PlanningImaginationRequest;
 use memory_ingest::{
-    AdmissionContext, AdmissionEngine, DeterministicDuplicateDetector, EventExtractor,
-    IngestEvent, IngestOutput, IngestPipeline, MemoryAdmission,
+    AdmissionContext, AdmissionEngine, DeterministicDuplicateDetector, EventExtractor, IngestEvent,
+    IngestOutput, IngestPipeline, MemoryAdmission,
 };
 use memory_lessons::{
     DeterministicContradictionHandler, DeterministicLessonMatcher, EvidenceRole, LessonOutcome,
@@ -385,7 +383,9 @@ impl AgentApiService {
         let connecting_edges = request
             .edges
             .iter()
-            .filter(|edge| edge.from_node_id == request.node_id || edge.to_node_id == request.node_id)
+            .filter(|edge| {
+                edge.from_node_id == request.node_id || edge.to_node_id == request.node_id
+            })
             .cloned()
             .collect::<Vec<_>>();
 
@@ -401,7 +401,9 @@ impl AgentApiService {
         request: &ProposeMemoryRequest,
     ) -> Result<ProposeMemoryResponse, AgentApiError> {
         let ingest_output = self.ingest_pipeline.extract(&request.event);
-        let admission_decisions = self.admission_engine.evaluate(&ingest_output, &request.context);
+        let admission_decisions = self
+            .admission_engine
+            .evaluate(&ingest_output, &request.context);
 
         Ok(ProposeMemoryResponse {
             ingest_output,
@@ -442,14 +444,14 @@ impl AgentApiService {
         &self,
         request: &GenerateImaginedScenariosRequest,
     ) -> Result<GenerateImaginedScenariosResponse, AgentApiError> {
-        let response = self
-            .imagination_service
-            .imagine_for_planning(&PlanningImaginationRequest {
-                planning_task: request.planning_task.clone(),
-                desired_scenarios: request.desired_scenarios,
-                context_packet: request.context_packet.clone(),
-                active_goal_node_ids: request.active_goal_node_ids.clone(),
-            })?;
+        let response =
+            self.imagination_service
+                .imagine_for_planning(&PlanningImaginationRequest {
+                    planning_task: request.planning_task.clone(),
+                    desired_scenarios: request.desired_scenarios,
+                    context_packet: request.context_packet.clone(),
+                    active_goal_node_ids: request.active_goal_node_ids.clone(),
+                })?;
 
         Ok(GenerateImaginedScenariosResponse {
             planning_task: response.planning_task,
@@ -558,7 +560,8 @@ pub fn tool_descriptions() -> Vec<AgentToolDescription> {
             name: "propose_memory".to_owned(),
             method: "POST".to_owned(),
             path: "/propose-memory".to_owned(),
-            description: "Run ingestion and admission policy for a candidate memory event.".to_owned(),
+            description: "Run ingestion and admission policy for a candidate memory event."
+                .to_owned(),
             example_request: json!({
                 "event": {
                     "UserMessage": {
@@ -713,21 +716,30 @@ impl From<LessonOutcome> for LessonOutcomeDto {
                 evidence_links,
             } => Self::ReinforceExisting {
                 updated_lesson,
-                evidence_links: evidence_links.into_iter().map(LessonEvidenceLinkDto::from).collect(),
+                evidence_links: evidence_links
+                    .into_iter()
+                    .map(LessonEvidenceLinkDto::from)
+                    .collect(),
             },
             LessonOutcome::RefineExisting {
                 updated_lesson,
                 evidence_links,
             } => Self::RefineExisting {
                 updated_lesson,
-                evidence_links: evidence_links.into_iter().map(LessonEvidenceLinkDto::from).collect(),
+                evidence_links: evidence_links
+                    .into_iter()
+                    .map(LessonEvidenceLinkDto::from)
+                    .collect(),
             },
             LessonOutcome::ContradictionHook {
                 target_lesson_id,
                 evidence_links,
             } => Self::ContradictionHook {
                 target_lesson_id,
-                evidence_links: evidence_links.into_iter().map(LessonEvidenceLinkDto::from).collect(),
+                evidence_links: evidence_links
+                    .into_iter()
+                    .map(LessonEvidenceLinkDto::from)
+                    .collect(),
             },
         }
     }
@@ -785,9 +797,7 @@ mod tests {
     use tower::ServiceExt;
     use uuid::Uuid;
 
-    use super::{
-        build_http_router, tool_descriptions, AgentApiService, RecallContextRequest,
-    };
+    use super::{build_http_router, tool_descriptions, AgentApiService, RecallContextRequest};
 
     #[tokio::test]
     async fn exposes_recall_context_endpoint() {
