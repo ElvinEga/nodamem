@@ -2,6 +2,7 @@
 
 use chrono::Utc;
 use memory_core::{CoreMarker, Lesson, LessonId, LessonType, MemoryStatus, Node, NodeId};
+use std::collections::HashSet;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -43,6 +44,10 @@ pub enum LessonOutcome {
         evidence_links: Vec<LessonEvidenceLink>,
     },
     RefineExisting {
+        updated_lesson: Lesson,
+        evidence_links: Vec<LessonEvidenceLink>,
+    },
+    WeakenExisting {
         updated_lesson: Lesson,
         evidence_links: Vec<LessonEvidenceLink>,
     },
@@ -178,10 +183,15 @@ where
                         candidate_lesson_id = %candidate.id.0,
                         target_lesson_id = %existing_lesson.id.0,
                         similarity = similar.similarity,
-                        "lesson proposal triggered contradiction hook"
+                        evidence_increment = proposal.source_memory_ids.len(),
+                        "lesson proposal weakened a contradicted lesson"
                     );
-                    return LessonOutcome::ContradictionHook {
-                        target_lesson_id: existing_lesson.id,
+                    return LessonOutcome::WeakenExisting {
+                        updated_lesson: weaken_lesson(
+                            existing_lesson,
+                            self.policy.refinement_confidence_increment,
+                            &proposal.source_memory_ids,
+                        ),
                         evidence_links: contradiction_links(existing_lesson.id, &proposal),
                     };
                 }
@@ -199,7 +209,7 @@ where
                         updated_lesson: reinforce_lesson(
                             existing_lesson,
                             self.policy.confidence_increment,
-                            proposal.source_memory_ids.len() as u32,
+                            &proposal.source_memory_ids,
                         ),
                         evidence_links: supporting_links(existing_lesson.id, &proposal),
                     };
@@ -219,7 +229,7 @@ where
                             existing_lesson,
                             candidate,
                             self.policy.refinement_confidence_increment,
-                            proposal.source_memory_ids.len() as u32,
+                            &proposal.source_memory_ids,
                         ),
                         evidence_links: supporting_links(existing_lesson.id, &proposal),
                     };
@@ -239,7 +249,7 @@ where
                     updated_lesson: reinforce_lesson(
                         existing_lesson,
                         self.policy.confidence_increment,
-                        proposal.source_memory_ids.len() as u32,
+                        &proposal.source_memory_ids,
                     ),
                     evidence_links: supporting_links(existing_lesson.id, &proposal),
                 };
@@ -397,12 +407,18 @@ fn infer_lesson_type(memory: &Node, lower: &str) -> Option<LessonType> {
 fn reinforce_lesson(
     existing: &Lesson,
     confidence_increment: f32,
-    evidence_increment: u32,
+    new_supporting_node_ids: &[NodeId],
 ) -> Lesson {
     let mut lesson = existing.clone();
+    let added_supporting_count =
+        count_new_node_ids(&lesson.supporting_node_ids, new_supporting_node_ids);
     lesson.status = MemoryStatus::Reinforced;
     lesson.confidence = (lesson.confidence + confidence_increment).clamp(0.0, 1.0);
-    lesson.evidence_count = lesson.evidence_count.saturating_add(evidence_increment);
+    lesson.supporting_node_ids =
+        merge_node_ids(&lesson.supporting_node_ids, new_supporting_node_ids);
+    lesson.evidence_count = lesson
+        .evidence_count
+        .saturating_add(added_supporting_count as u32);
     lesson.reinforcement_count = lesson.reinforcement_count.saturating_add(1);
     lesson.updated_at = Utc::now();
     lesson
@@ -412,14 +428,39 @@ fn refine_lesson(
     existing: &Lesson,
     candidate: &Lesson,
     confidence_increment: f32,
-    evidence_increment: u32,
+    new_supporting_node_ids: &[NodeId],
 ) -> Lesson {
     let mut lesson = existing.clone();
+    let added_supporting_count =
+        count_new_node_ids(&lesson.supporting_node_ids, new_supporting_node_ids);
     lesson.statement = candidate.statement.clone();
     lesson.title = candidate.title.clone();
     lesson.confidence = (lesson.confidence + confidence_increment).clamp(0.0, 1.0);
-    lesson.evidence_count = lesson.evidence_count.saturating_add(evidence_increment);
+    lesson.supporting_node_ids =
+        merge_node_ids(&lesson.supporting_node_ids, new_supporting_node_ids);
+    lesson.evidence_count = lesson
+        .evidence_count
+        .saturating_add(added_supporting_count as u32);
     lesson.reinforcement_count = lesson.reinforcement_count.saturating_add(1);
+    lesson.updated_at = Utc::now();
+    lesson
+}
+
+fn weaken_lesson(
+    existing: &Lesson,
+    confidence_decrement: f32,
+    contradicting_node_ids: &[NodeId],
+) -> Lesson {
+    let mut lesson = existing.clone();
+    let added_contradicting_count =
+        count_new_node_ids(&lesson.contradicting_node_ids, contradicting_node_ids);
+    lesson.status = MemoryStatus::Contradicted;
+    lesson.confidence = (lesson.confidence - confidence_decrement).clamp(0.0, 1.0);
+    lesson.contradicting_node_ids =
+        merge_node_ids(&lesson.contradicting_node_ids, contradicting_node_ids);
+    lesson.evidence_count = lesson
+        .evidence_count
+        .saturating_add(added_contradicting_count as u32);
     lesson.updated_at = Utc::now();
     lesson
 }
@@ -448,6 +489,25 @@ fn contradiction_links(lesson_id: LessonId, proposal: &ProposedLesson) -> Vec<Le
             role: EvidenceRole::Contradicting,
         })
         .collect()
+}
+
+fn merge_node_ids(existing: &[NodeId], additional: &[NodeId]) -> Vec<NodeId> {
+    let mut merged = existing.to_vec();
+    let mut seen = existing.iter().copied().collect::<HashSet<_>>();
+    for node_id in additional {
+        if seen.insert(*node_id) {
+            merged.push(*node_id);
+        }
+    }
+    merged
+}
+
+fn count_new_node_ids(existing: &[NodeId], additional: &[NodeId]) -> usize {
+    let seen = existing.iter().copied().collect::<HashSet<_>>();
+    additional
+        .iter()
+        .filter(|node_id| !seen.contains(node_id))
+        .count()
 }
 
 fn lesson_statement(content: &str) -> String {
@@ -570,7 +630,7 @@ mod tests {
                 evidence_links,
             } => {
                 assert!(updated_lesson.confidence > existing.confidence);
-                assert_eq!(updated_lesson.evidence_count, existing.evidence_count + 1);
+                assert_eq!(updated_lesson.evidence_count, existing.evidence_count);
                 assert_eq!(evidence_links.len(), 1);
             }
             outcome => panic!("unexpected outcome: {outcome:?}"),
@@ -605,12 +665,120 @@ mod tests {
         let outcomes = service.process_memories(&[memory], &[existing.clone()]);
 
         match &outcomes[0] {
-            LessonOutcome::ContradictionHook {
-                target_lesson_id,
+            LessonOutcome::WeakenExisting {
+                updated_lesson,
                 evidence_links,
             } => {
-                assert_eq!(*target_lesson_id, existing.id);
+                assert_eq!(updated_lesson.id, existing.id);
+                assert!(updated_lesson.confidence < existing.confidence);
+                assert_eq!(updated_lesson.status, MemoryStatus::Contradicted);
+                assert_eq!(updated_lesson.contradicting_node_ids.len(), 1);
                 assert_eq!(evidence_links.len(), 1);
+            }
+            outcome => panic!("unexpected outcome: {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn refines_lesson_and_preserves_provenance() {
+        let service = LessonService::default();
+        let prior_node_id = NodeId(Uuid::new_v4());
+        let new_memory = Node {
+            id: NodeId(Uuid::new_v4()),
+            node_type: NodeType::Semantic,
+            status: MemoryStatus::Active,
+            title: "strategy detail".to_owned(),
+            summary: "We should run migrations before retrieval and before opening the adapter."
+                .to_owned(),
+            content: Some(
+                "We should run migrations before retrieval and before opening the adapter."
+                    .to_owned(),
+            ),
+            tags: vec!["system".to_owned()],
+            confidence: 0.85,
+            importance: 0.9,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_accessed_at: None,
+            source_event_id: Some("new-evidence".to_owned()),
+        };
+        let existing = memory_core::Lesson {
+            id: memory_core::LessonId(Uuid::new_v4()),
+            lesson_type: LessonType::System,
+            status: MemoryStatus::Active,
+            title: "run migrations".to_owned(),
+            statement: "We should run migrations before retrieval.".to_owned(),
+            confidence: 0.6,
+            evidence_count: 1,
+            reinforcement_count: 0,
+            supporting_node_ids: vec![prior_node_id],
+            contradicting_node_ids: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let outcomes = service.process_memories(&[new_memory.clone()], &[existing.clone()]);
+
+        match &outcomes[0] {
+            LessonOutcome::RefineExisting {
+                updated_lesson,
+                evidence_links,
+            } => {
+                assert!(updated_lesson
+                    .statement
+                    .contains("before opening the adapter"));
+                assert_eq!(updated_lesson.supporting_node_ids.len(), 2);
+                assert!(updated_lesson.supporting_node_ids.contains(&prior_node_id));
+                assert!(updated_lesson.supporting_node_ids.contains(&new_memory.id));
+                assert_eq!(updated_lesson.evidence_count, 2);
+                assert_eq!(evidence_links.len(), 1);
+            }
+            outcome => panic!("unexpected outcome: {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn reinforcement_dedupes_evidence_ids() {
+        let service = LessonService::default();
+        let memory_id = NodeId(Uuid::new_v4());
+        let memory = Node {
+            id: memory_id,
+            node_type: NodeType::Semantic,
+            status: MemoryStatus::Active,
+            title: "task workflow".to_owned(),
+            summary: "Task workflow: process steps should be stored deterministically.".to_owned(),
+            content: Some(
+                "Task workflow: process steps should be stored deterministically.".to_owned(),
+            ),
+            tags: vec!["tool".to_owned()],
+            confidence: 0.8,
+            importance: 0.8,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_accessed_at: None,
+            source_event_id: Some("accepted-memory".to_owned()),
+        };
+        let existing = memory_core::Lesson {
+            id: memory_core::LessonId(Uuid::new_v4()),
+            lesson_type: LessonType::Task,
+            status: MemoryStatus::Active,
+            title: "process steps".to_owned(),
+            statement: "Task workflow process steps should be stored deterministically".to_owned(),
+            confidence: 0.6,
+            evidence_count: 1,
+            reinforcement_count: 1,
+            supporting_node_ids: vec![memory_id],
+            contradicting_node_ids: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let outcomes = service.process_memories(&[memory], &[existing.clone()]);
+
+        match &outcomes[0] {
+            LessonOutcome::ReinforceExisting { updated_lesson, .. } => {
+                assert_eq!(updated_lesson.supporting_node_ids, vec![memory_id]);
+                assert_eq!(updated_lesson.evidence_count, 1);
             }
             outcome => panic!("unexpected outcome: {outcome:?}"),
         }
