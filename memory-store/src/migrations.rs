@@ -72,6 +72,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "node_embeddings",
         sql: include_str!("../migrations/0011_node_embeddings.sql"),
     },
+    Migration {
+        version: "0012",
+        name: "node_recall_stats",
+        sql: include_str!("../migrations/0012_node_recall_stats.sql"),
+    },
 ];
 
 pub async fn run_migrations(connection: &Connection) -> Result<(), StoreError> {
