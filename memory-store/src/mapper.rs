@@ -3,10 +3,10 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
 use libsql::Row;
 use memory_core::{
-    Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, ImaginationStatus, ImaginedScenario, Lesson,
-    LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType, ScenarioId, SelfModel, SelfModelId,
-    Timestamp, TraitChangeKind, TraitEvent, TraitEventId, TraitId, TraitState, TraitType,
-    WorkingMemoryEntry, WorkingMemoryId,
+    Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, ImaginationStatus, ImaginedScenario,
+    ImaginedScenarioKind, Lesson, LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType,
+    ScenarioId, SelfModel, SelfModelId, Timestamp, TraitChangeKind, TraitEvent, TraitEventId,
+    TraitId, TraitState, TraitType, WorkingMemoryEntry, WorkingMemoryId,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -177,35 +177,40 @@ pub fn map_self_model(row: &Row) -> Result<SelfModel, StoreError> {
 pub fn map_imagined_scenario(row: &Row) -> Result<ImaginedScenario, StoreError> {
     Ok(ImaginedScenario {
         id: ScenarioId(parse_uuid(row.get::<String>(0)?, "imagined_nodes.id")?),
-        status: parse_imagination_status(&row.get::<String>(1)?)?,
-        title: row.get(2)?,
-        premise: row.get(3)?,
-        narrative: row.get(4)?,
+        kind: parse_imagined_scenario_kind(&row.get::<String>(1)?)?,
+        status: parse_imagination_status(&row.get::<String>(2)?)?,
+        title: row.get(3)?,
+        premise: row.get(4)?,
+        narrative: row.get(5)?,
         basis_source_node_ids: parse_id_list(
-            &row.get::<String>(5)?,
+            &row.get::<String>(6)?,
             "imagined_nodes.basis_source_node_ids_json",
             NodeId,
         )?,
         basis_lesson_ids: parse_id_list(
-            &row.get::<String>(6)?,
+            &row.get::<String>(7)?,
             "imagined_nodes.basis_lesson_ids_json",
             LessonId,
         )?,
         active_goal_node_ids: parse_id_list(
-            &row.get::<String>(7)?,
+            &row.get::<String>(8)?,
             "imagined_nodes.active_goal_node_ids_json",
             NodeId,
         )?,
-        trait_snapshot: parse_json(&row.get::<String>(8)?, "imagined_nodes.trait_snapshot_json")?,
+        trait_snapshot: parse_json(&row.get::<String>(9)?, "imagined_nodes.trait_snapshot_json")?,
+        self_model_snapshot: row
+            .get::<Option<String>>(10)?
+            .map(|value| parse_json(&value, "imagined_nodes.self_model_snapshot_json"))
+            .transpose()?,
         predicted_outcomes: parse_json(
-            &row.get::<String>(9)?,
+            &row.get::<String>(11)?,
             "imagined_nodes.predicted_outcomes_json",
         )?,
-        plausibility_score: row.get::<f64>(10)? as f32,
-        novelty_score: row.get::<f64>(11)? as f32,
-        usefulness_score: row.get::<f64>(12)? as f32,
-        created_at: parse_timestamp(&row.get::<String>(13)?)?,
-        updated_at: parse_timestamp(&row.get::<String>(14)?)?,
+        plausibility_score: row.get::<f64>(12)? as f32,
+        novelty_score: row.get::<f64>(13)? as f32,
+        usefulness_score: row.get::<f64>(14)? as f32,
+        created_at: parse_timestamp(&row.get::<String>(15)?)?,
+        updated_at: parse_timestamp(&row.get::<String>(16)?)?,
     })
 }
 
@@ -288,6 +293,14 @@ pub fn format_trait_change_kind(value: TraitChangeKind) -> &'static str {
         TraitChangeKind::Reinforced => "reinforced",
         TraitChangeKind::Weakened => "weakened",
         TraitChangeKind::Stable => "stable",
+    }
+}
+
+pub fn format_imagined_scenario_kind(value: ImaginedScenarioKind) -> &'static str {
+    match value {
+        ImaginedScenarioKind::FutureNeedPrediction => "future_need_prediction",
+        ImaginedScenarioKind::AlternativePlan => "alternative_plan",
+        ImaginedScenarioKind::Counterfactual => "counterfactual",
     }
 }
 
@@ -425,6 +438,18 @@ pub fn parse_trait_change_kind(value: &str) -> Result<TraitChangeKind, StoreErro
         "stable" => Ok(TraitChangeKind::Stable),
         _ => Err(StoreError::InvalidValue {
             field: "trait_change_kind",
+            value: value.to_owned(),
+        }),
+    }
+}
+
+pub fn parse_imagined_scenario_kind(value: &str) -> Result<ImaginedScenarioKind, StoreError> {
+    match value {
+        "future_need_prediction" => Ok(ImaginedScenarioKind::FutureNeedPrediction),
+        "alternative_plan" => Ok(ImaginedScenarioKind::AlternativePlan),
+        "counterfactual" => Ok(ImaginedScenarioKind::Counterfactual),
+        _ => Err(StoreError::InvalidValue {
+            field: "imagined_scenario_kind",
             value: value.to_owned(),
         }),
     }
