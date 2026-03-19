@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use chrono::Utc;
 use memory_core::{
-    Checkpoint, Edge, Lesson, MemoryPacket, MemoryPacketId, Node, NodeId, TraitState,
+    Checkpoint, Edge, Lesson, MemoryPacket, MemoryPacketId, Node, NodeId, SelfModel, TraitState,
 };
 use uuid::Uuid;
 
@@ -16,6 +16,7 @@ pub fn assemble_memory_packet(
     lessons: &[Lesson],
     checkpoint_summary: Option<Checkpoint>,
     trait_snapshot: Option<TraitState>,
+    self_model_snapshot: Option<SelfModel>,
     ranked: &[HybridCandidate],
     policy: &RetrievalPolicy,
 ) -> RetrievedMemoryPacket {
@@ -64,6 +65,7 @@ pub fn assemble_memory_packet(
         edges: packet_edges,
         lessons: packet_lessons.clone(),
         traits: trait_snapshot.iter().cloned().collect(),
+        self_model_snapshot,
         checkpoints: checkpoint_summary.iter().cloned().collect(),
         imagined_scenarios: Vec::new(),
     };
