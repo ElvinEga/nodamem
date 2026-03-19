@@ -5,8 +5,8 @@ use memory_core::{Edge, Node, NodeId};
 
 use crate::graph::NeighborCandidate;
 use crate::lexical::LexicalCandidate;
-use crate::{RetrievalScoreBreakdown};
 use crate::vector::VectorCandidate;
+use crate::RetrievalScoreBreakdown;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HybridCandidate {
@@ -59,7 +59,12 @@ pub fn merge_and_rank(
 
     let lexical_scores = lexical_hits
         .iter()
-        .map(|candidate| (candidate.node_id, (candidate.lexical_score / lexical_max).clamp(0.0, 1.0)))
+        .map(|candidate| {
+            (
+                candidate.node_id,
+                (candidate.lexical_score / lexical_max).clamp(0.0, 1.0),
+            )
+        })
         .collect::<HashMap<_, _>>();
     let vector_scores = vector_hits
         .iter()
