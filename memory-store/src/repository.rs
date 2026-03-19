@@ -198,6 +198,45 @@ impl<'a> StoreRepository<'a> {
         Ok(nodes)
     }
 
+    pub async fn list_nodes(&self) -> Result<Vec<Node>, StoreError> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, node_type, status, title, summary, content, tags_json, confidence,
+                        importance, created_at, updated_at, last_accessed_at, source_event_id
+                 FROM nodes
+                 ORDER BY updated_at DESC",
+                params![],
+            )
+            .await?;
+
+        let mut nodes = Vec::new();
+        while let Some(row) = rows.next().await? {
+            nodes.push(map_node(&row)?);
+        }
+
+        Ok(nodes)
+    }
+
+    pub async fn list_edges(&self) -> Result<Vec<Edge>, StoreError> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, edge_type, from_node_id, to_node_id, weight, created_at, updated_at
+                 FROM edges
+                 ORDER BY updated_at DESC",
+                params![],
+            )
+            .await?;
+
+        let mut edges = Vec::new();
+        while let Some(row) = rows.next().await? {
+            edges.push(map_edge(&row)?);
+        }
+
+        Ok(edges)
+    }
+
     pub async fn upsert_node_embedding(
         &self,
         record: &NodeEmbeddingRecord,
@@ -438,6 +477,37 @@ impl<'a> StoreRepository<'a> {
         }
 
         Ok(checkpoints)
+    }
+
+    pub async fn list_lessons(&self) -> Result<Vec<Lesson>, StoreError> {
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, lesson_type, status, title, statement, confidence, evidence_count,
+                        reinforcement_count, created_at, updated_at
+                 FROM lessons
+                 ORDER BY updated_at DESC",
+                params![],
+            )
+            .await?;
+
+        let mut lessons = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let lesson_id = LessonId(crate::mapper::parse_uuid(row.get::<String>(0)?, "lessons.id")?);
+            let (supporting_node_ids, contradicting_node_ids) =
+                self.load_lesson_sources(lesson_id).await?;
+            lessons.push(map_lesson(
+                &row,
+                supporting_node_ids,
+                contradicting_node_ids,
+            )?);
+        }
+
+        Ok(lessons)
+    }
+
+    pub async fn list_trait_states(&self) -> Result<Vec<TraitState>, StoreError> {
+        self.load_all_trait_states().await
     }
 
     pub async fn inspect_node_audit(
