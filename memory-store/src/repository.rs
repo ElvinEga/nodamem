@@ -12,8 +12,8 @@ use uuid::Uuid;
 use crate::audit::{LessonAuditTrail, NodeAuditTrail};
 use crate::error::StoreError;
 use crate::mapper::{
-    format_edge_type, format_lesson_type, format_memory_status, format_node_type,
-    format_imagination_status, format_optional_timestamp, format_timestamp, format_trait_type,
+    format_edge_type, format_imagination_status, format_lesson_type, format_memory_status,
+    format_node_type, format_optional_timestamp, format_timestamp, format_trait_type,
     lesson_id_strings, map_checkpoint, map_edge, map_imagined_scenario, map_lesson, map_node,
     map_trait_state, map_working_memory_entry, node_id_strings, payload_to_json, to_json,
     trait_id_strings,
@@ -493,7 +493,10 @@ impl<'a> StoreRepository<'a> {
 
         let mut lessons = Vec::new();
         while let Some(row) = rows.next().await? {
-            let lesson_id = LessonId(crate::mapper::parse_uuid(row.get::<String>(0)?, "lessons.id")?);
+            let lesson_id = LessonId(crate::mapper::parse_uuid(
+                row.get::<String>(0)?,
+                "lessons.id",
+            )?);
             let (supporting_node_ids, contradicting_node_ids) =
                 self.load_lesson_sources(lesson_id).await?;
             lessons.push(map_lesson(
@@ -607,7 +610,9 @@ impl<'a> StoreRepository<'a> {
         };
 
         let supporting_nodes = self.load_nodes_by_ids(&lesson.supporting_node_ids).await?;
-        let contradicting_nodes = self.load_nodes_by_ids(&lesson.contradicting_node_ids).await?;
+        let contradicting_nodes = self
+            .load_nodes_by_ids(&lesson.contradicting_node_ids)
+            .await?;
         let influenced_traits = self
             .load_all_trait_states()
             .await?
@@ -1054,7 +1059,7 @@ fn missing_row(kind: &'static str, id: Uuid) -> StoreError {
 mod tests {
     use chrono::Utc;
     use memory_core::{
-        Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, ImaginedScenario, ImaginationStatus,
+        Checkpoint, CheckpointId, Edge, EdgeId, EdgeType, ImaginationStatus, ImaginedScenario,
         Lesson, LessonId, LessonType, MemoryStatus, Node, NodeId, NodeType, ScenarioId, TraitId,
         TraitState, TraitType, WorkingMemoryEntry, WorkingMemoryId,
     };
@@ -1284,8 +1289,9 @@ mod tests {
             title: "Hypothetical plan".to_owned(),
             premise: "If the agent reuses the basis memory cluster, planning may accelerate."
                 .to_owned(),
-            narrative: "This scenario is hypothetical and should not be treated as verified memory."
-                .to_owned(),
+            narrative:
+                "This scenario is hypothetical and should not be treated as verified memory."
+                    .to_owned(),
             basis_source_node_ids: vec![basis_node.id],
             basis_lesson_ids: Vec::new(),
             active_goal_node_ids: vec![goal_node.id],
