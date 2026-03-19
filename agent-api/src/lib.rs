@@ -11,7 +11,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use libsql::Connection;
-use memory_core::{Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, Node, NodeId, TraitState};
+use memory_core::{
+    Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, Node, NodeId, SelfModel, TraitEvent,
+    TraitState,
+};
 use memory_imagination::PlanningImaginationRequest;
 pub use memory_imagination::{
     ImaginationError, ImaginationPolicy, ImaginationService, PlanningImaginationApi,
@@ -171,6 +174,10 @@ pub enum LessonOutcomeDto {
         updated_lesson: Lesson,
         evidence_links: Vec<LessonEvidenceLinkDto>,
     },
+    WeakenExisting {
+        updated_lesson: Lesson,
+        evidence_links: Vec<LessonEvidenceLinkDto>,
+    },
     ContradictionHook {
         target_lesson_id: memory_core::LessonId,
         evidence_links: Vec<LessonEvidenceLinkDto>,
@@ -200,6 +207,8 @@ pub struct ProposeLessonResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecordOutcomeRequest {
     pub existing_traits: Vec<TraitState>,
+    pub existing_lessons: Vec<Lesson>,
+    pub existing_self_model: Option<SelfModel>,
     pub outcome: OutcomeRecordDto,
 }
 
@@ -225,6 +234,8 @@ pub struct TraitUpdateDto {
 pub struct RecordOutcomeResponse {
     pub updated_traits: Vec<TraitState>,
     pub updates: Vec<TraitUpdateDto>,
+    pub trait_events: Vec<TraitEvent>,
+    pub refreshed_self_model: Option<SelfModel>,
 }
 
 /// DTO for `/generate-imagined-scenarios`.
@@ -542,13 +553,27 @@ impl AgentApiService {
         request: &RecordOutcomeRequest,
     ) -> Result<RecordOutcomeResponse, AgentApiError> {
         let outcome = OutcomeRecord::from(request.outcome.clone());
-        let (updated_traits, updates) = self
-            .personality_service
-            .record_outcome(&request.existing_traits, &outcome);
+        let result = self.personality_service.record_outcome(
+            &request.existing_traits,
+            &request.existing_lessons,
+            request.existing_self_model.as_ref(),
+            &outcome,
+        );
 
         Ok(RecordOutcomeResponse {
-            updated_traits,
-            updates: updates.into_iter().map(TraitUpdateDto::from).collect(),
+            updated_traits: result.updated_traits,
+            updates: result
+                .updates
+                .iter()
+                .cloned()
+                .map(TraitUpdateDto::from)
+                .collect(),
+            trait_events: result
+                .updates
+                .iter()
+                .map(|update| update.to_event(memory_core::TraitEventId(uuid::Uuid::new_v4())))
+                .collect(),
+            refreshed_self_model: result.refreshed_self_model,
         })
     }
 
@@ -706,6 +731,8 @@ pub fn tool_descriptions() -> Vec<AgentToolDescription> {
             description: "Apply a validated outcome to the trait subsystem.".to_owned(),
             example_request: json!({
                 "existing_traits": [],
+                "existing_lessons": [],
+                "existing_self_model": null,
                 "outcome": {
                     "outcome_id": "out-1",
                     "subject_node_id": null,
@@ -837,6 +864,16 @@ impl From<LessonOutcome> for LessonOutcomeDto {
                 updated_lesson,
                 evidence_links,
             } => Self::RefineExisting {
+                updated_lesson,
+                evidence_links: evidence_links
+                    .into_iter()
+                    .map(LessonEvidenceLinkDto::from)
+                    .collect(),
+            },
+            LessonOutcome::WeakenExisting {
+                updated_lesson,
+                evidence_links,
+            } => Self::WeakenExisting {
                 updated_lesson,
                 evidence_links: evidence_links
                     .into_iter()
