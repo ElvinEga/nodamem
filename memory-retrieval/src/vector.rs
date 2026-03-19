@@ -63,7 +63,10 @@ where
         }
 
         let embedded_query = self.embedder.embed_query(query)?;
-        let allowed_node_ids = nodes.iter().map(|node| node.id).collect::<std::collections::HashSet<_>>();
+        let allowed_node_ids = nodes
+            .iter()
+            .map(|node| node.id)
+            .collect::<std::collections::HashSet<_>>();
         let matches = block_on_store_future(async {
             let repository = StoreRepository::new(&self.connection);
             repository
