@@ -286,6 +286,7 @@ mod tests {
             lessons: Vec::new(),
             checkpoints: Vec::new(),
             traits: Vec::new(),
+            self_model_snapshot: None,
         };
 
         let response = adapter
@@ -459,7 +460,8 @@ mod tests {
                 planning_task: "Plan next release".to_owned(),
                 scenarios: vec![memory_core::ImaginedScenario {
                     id: ScenarioId(Uuid::new_v4()),
-                    status: ImaginationStatus::Proposed,
+                    kind: memory_core::ImaginedScenarioKind::AlternativePlan,
+                    status: ImaginationStatus::Simulated,
                     title: "Hypothetical scenario".to_owned(),
                     premise: "If rollout notes are improved, onboarding may speed up.".to_owned(),
                     narrative: "This is hypothetical.".to_owned(),
@@ -467,6 +469,7 @@ mod tests {
                     basis_lesson_ids: vec![sample_lesson().id],
                     active_goal_node_ids: Vec::new(),
                     trait_snapshot: vec![sample_trait()],
+                    self_model_snapshot: None,
                     predicted_outcomes: vec!["Faster planning alignment.".to_owned()],
                     plausibility_score: 0.7,
                     novelty_score: 0.5,
@@ -487,6 +490,7 @@ mod tests {
             edges: Vec::new(),
             lessons: vec![sample_lesson()],
             traits: vec![sample_trait()],
+            self_model_snapshot: None,
             checkpoints: Vec::new(),
             imagined_scenarios: Vec::new(),
         }
