@@ -10,9 +10,7 @@
 use std::error::Error as StdError;
 use std::fmt;
 
-use memory_core::{
-    Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, Node, NodeId, TraitState,
-};
+use memory_core::{Checkpoint, CoreMarker, Edge, Lesson, MemoryPacket, Node, NodeId, TraitState};
 use memory_store::StoreMarker;
 use tracing::debug;
 
@@ -22,7 +20,7 @@ pub mod packet;
 pub mod rerank;
 pub mod vector;
 
-use graph::{GraphExpansionConfig, GraphExpander};
+use graph::{GraphExpander, GraphExpansionConfig};
 use lexical::{LexicalCandidate, LexicalSearch, TantivyLexicalIndex};
 use packet::assemble_memory_packet;
 use rerank::{merge_and_rank, HybridWeights};
@@ -193,8 +191,7 @@ where
         debug!(vector_hits = vector_hits.len(), "vector hits collected");
 
         let seed_ids = seed_node_ids(&lexical_hits, &vector_hits);
-        let neighbor_hits =
-            GraphExpander::new(self.policy.graph).expand(&seed_ids, &nodes, &edges);
+        let neighbor_hits = GraphExpander::new(self.policy.graph).expand(&seed_ids, &nodes, &edges);
 
         debug!(
             merged_seed_ids = seed_ids.len(),
@@ -239,7 +236,10 @@ where
     }
 }
 
-fn seed_node_ids(lexical_hits: &[LexicalCandidate], vector_hits: &[VectorCandidate]) -> Vec<NodeId> {
+fn seed_node_ids(
+    lexical_hits: &[LexicalCandidate],
+    vector_hits: &[VectorCandidate],
+) -> Vec<NodeId> {
     let mut seen = std::collections::HashSet::new();
 
     lexical_hits
@@ -332,30 +332,36 @@ mod tests {
 
     impl QueryEmbeddingProvider for TestQueryEmbedder {
         fn embed_query(&self, query: &MemoryQuery) -> Result<EmbeddedQuery, RetrievalError> {
-            self.embeddings
-                .get(&query.text)
-                .cloned()
-                .ok_or_else(|| RetrievalError::Vector(format!("missing embedding for {}", query.text)))
+            self.embeddings.get(&query.text).cloned().ok_or_else(|| {
+                RetrievalError::Vector(format!("missing embedding for {}", query.text))
+            })
         }
     }
 
     #[test]
     fn bm25_search_returns_exact_keyword_matches() {
         let source = sample_source();
-        let index = TantivyLexicalIndex::from_nodes(&source.nodes).expect("index build should work");
+        let index =
+            TantivyLexicalIndex::from_nodes(&source.nodes).expect("index build should work");
         let hits = index
             .search("migrations", 5)
             .expect("lexical search should work");
 
         assert!(!hits.is_empty());
-        assert!(hits[0].matched_fields.iter().any(|field| field == "title" || field == "content"));
+        assert!(hits[0]
+            .matched_fields
+            .iter()
+            .any(|field| field == "title" || field == "content"));
     }
 
     #[test]
     fn vector_results_are_merged_with_lexical_hits() {
         let source = sample_source();
-        let index = TantivyLexicalIndex::from_nodes(&source.nodes).expect("index build should work");
-        let lexical_hits = index.search("architecture", 5).expect("lexical search should work");
+        let index =
+            TantivyLexicalIndex::from_nodes(&source.nodes).expect("index build should work");
+        let lexical_hits = index
+            .search("architecture", 5)
+            .expect("lexical search should work");
         let vector_hits = vec![VectorCandidate {
             node_id: source.nodes[1].id,
             vector_similarity_score: 0.9,
@@ -370,7 +376,10 @@ mod tests {
             &HybridWeights::default(),
         );
 
-        let unique_ids = ranked.iter().map(|candidate| candidate.node.id).collect::<std::collections::HashSet<_>>();
+        let unique_ids = ranked
+            .iter()
+            .map(|candidate| candidate.node.id)
+            .collect::<std::collections::HashSet<_>>();
         assert_eq!(ranked.len(), unique_ids.len());
     }
 
@@ -402,8 +411,11 @@ mod tests {
         let source = sample_source();
         let runtime = build_vector_store(&source.nodes, &sample_embeddings());
         let vector_search = sample_turso_vector_search(&runtime.database);
-        let index = TantivyLexicalIndex::from_nodes(&source.nodes).expect("index build should work");
-        let lexical_hits = index.search("architecture", 5).expect("lexical search should work");
+        let index =
+            TantivyLexicalIndex::from_nodes(&source.nodes).expect("index build should work");
+        let lexical_hits = index
+            .search("architecture", 5)
+            .expect("lexical search should work");
         let vector_hits = vector_search
             .search(
                 &MemoryQuery {
@@ -430,7 +442,9 @@ mod tests {
             .map(|candidate| candidate.node.id)
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(ranked.len(), unique_ids.len());
-        assert!(ranked.iter().any(|candidate| candidate.node.id == source.nodes[1].id));
+        assert!(ranked
+            .iter()
+            .any(|candidate| candidate.node.id == source.nodes[1].id));
     }
 
     #[test]
@@ -562,7 +576,13 @@ mod tests {
         );
 
         TestSource {
-            nodes: vec![node_a.clone(), node_b.clone(), node_c.clone(), node_d.clone(), node_e.clone()],
+            nodes: vec![
+                node_a.clone(),
+                node_b.clone(),
+                node_c.clone(),
+                node_d.clone(),
+                node_e.clone(),
+            ],
             edges: vec![
                 edge(node_a.id, node_b.id, 0.9),
                 edge(node_b.id, node_c.id, 0.8),
@@ -575,7 +595,8 @@ mod tests {
                     lesson_type: LessonType::Strategy,
                     status: MemoryStatus::Active,
                     title: "Keep rollout notes explicit".to_owned(),
-                    statement: "Planning improves when rollout notes and migrations are explicit.".to_owned(),
+                    statement: "Planning improves when rollout notes and migrations are explicit."
+                        .to_owned(),
                     confidence: 0.82,
                     evidence_count: 2,
                     reinforcement_count: 2,
@@ -664,10 +685,7 @@ mod tests {
         }
     }
 
-    fn build_vector_store(
-        nodes: &[Node],
-        embeddings: &HashMap<String, Vec<f32>>,
-    ) -> StoreRuntime {
+    fn build_vector_store(nodes: &[Node], embeddings: &HashMap<String, Vec<f32>>) -> StoreRuntime {
         let tempdir = tempdir().expect("temporary directory should be created");
         let db_dir = tempdir.path().to_path_buf();
         std::mem::forget(tempdir);
@@ -699,9 +717,13 @@ mod tests {
         runtime
     }
 
-    fn sample_turso_vector_search(database: &libsql::Database) -> TursoVectorSearch<TestQueryEmbedder> {
+    fn sample_turso_vector_search(
+        database: &libsql::Database,
+    ) -> TursoVectorSearch<TestQueryEmbedder> {
         TursoVectorSearch::new(
-            database.connect().expect("vector search connection should open"),
+            database
+                .connect()
+                .expect("vector search connection should open"),
             TestQueryEmbedder {
                 embeddings: HashMap::from([
                     (
