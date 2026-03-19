@@ -18,6 +18,7 @@ pub struct OpenClawRecallContextRequest {
     pub lessons: Vec<memory_core::Lesson>,
     pub checkpoints: Vec<Checkpoint>,
     pub traits: Vec<memory_core::TraitState>,
+    pub self_model_snapshot: Option<memory_core::SelfModel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,6 +86,7 @@ pub struct OpenClawTraitSummary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OpenClawImaginedScenarioSummary {
     pub scenario_id: memory_core::ScenarioId,
+    pub kind: memory_core::ImaginedScenarioKind,
     pub title: String,
     pub premise: String,
     pub predicted_outcomes: Vec<String>,
@@ -186,6 +188,7 @@ impl From<OpenClawRecallContextRequest> for RecallContextRequest {
             lessons: value.lessons,
             checkpoints: value.checkpoints,
             traits: value.traits,
+            self_model_snapshot: value.self_model_snapshot,
         }
     }
 }
@@ -280,6 +283,7 @@ impl From<memory_core::ImaginedScenario> for OpenClawImaginedScenarioSummary {
     fn from(value: memory_core::ImaginedScenario) -> Self {
         Self {
             scenario_id: value.id,
+            kind: value.kind,
             title: value.title,
             premise: value.premise,
             predicted_outcomes: value.predicted_outcomes,
