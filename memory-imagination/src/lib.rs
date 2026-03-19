@@ -6,7 +6,7 @@ use std::fmt;
 
 use chrono::Utc;
 use memory_core::{
-    CoreMarker, Edge, ImaginedScenario, ImaginationStatus, Lesson, MemoryPacket, Node, NodeId,
+    CoreMarker, Edge, ImaginationStatus, ImaginedScenario, Lesson, MemoryPacket, Node, NodeId,
     NodeType, ScenarioId, TraitState, TraitType,
 };
 use uuid::Uuid;
@@ -38,7 +38,9 @@ impl fmt::Display for ImaginationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyPlanningTask => write!(formatter, "planning task must not be empty"),
-            Self::EmptyContext => write!(formatter, "planning imagination requires verified context"),
+            Self::EmptyContext => {
+                write!(formatter, "planning imagination requires verified context")
+            }
         }
     }
 }
@@ -175,7 +177,8 @@ impl PlanningImaginationApi for ImaginationService {
 
         let scenarios = (0..desired)
             .map(|index| {
-                let cluster = pick_cluster(&clusters, index, self.policy.max_basis_nodes_per_scenario);
+                let cluster =
+                    pick_cluster(&clusters, index, self.policy.max_basis_nodes_per_scenario);
                 let goal = goals.get(index % goals.len().max(1));
                 let lessons = select_supporting_lessons(
                     &request.context_packet.lessons,
@@ -209,7 +212,8 @@ fn connected_clusters<'a>(nodes: &'a [Node], edges: &[Edge]) -> Vec<Vec<&'a Node
     let mut adjacency = HashMap::<NodeId, Vec<NodeId>>::new();
 
     for edge in edges {
-        if node_by_id.contains_key(&edge.from_node_id) && node_by_id.contains_key(&edge.to_node_id) {
+        if node_by_id.contains_key(&edge.from_node_id) && node_by_id.contains_key(&edge.to_node_id)
+        {
             adjacency
                 .entry(edge.from_node_id)
                 .or_default()
@@ -255,7 +259,11 @@ fn connected_clusters<'a>(nodes: &'a [Node], edges: &[Edge]) -> Vec<Vec<&'a Node
     clusters
 }
 
-fn pick_cluster<'a>(clusters: &'a [Vec<&'a Node>], index: usize, max_basis_nodes: usize) -> &'a [&'a Node] {
+fn pick_cluster<'a>(
+    clusters: &'a [Vec<&'a Node>],
+    index: usize,
+    max_basis_nodes: usize,
+) -> &'a [&'a Node] {
     let cluster = clusters
         .get(index % clusters.len().max(1))
         .map(Vec::as_slice)
@@ -278,7 +286,8 @@ fn active_goals<'a>(nodes: &'a [Node], requested_goal_ids: &[NodeId]) -> Vec<&'a
     goals.sort_by(|left, right| right.importance.total_cmp(&left.importance));
 
     if goals.is_empty() {
-        nodes.iter()
+        nodes
+            .iter()
             .max_by(|left, right| left.importance.total_cmp(&right.importance))
             .into_iter()
             .collect()
@@ -384,10 +393,17 @@ fn plausibility_score(
     let goal_confidence = goal.map_or(0.5, |node| node.confidence.clamp(0.0, 1.0));
     let evidence_trait = trait_strength(
         trait_snapshot,
-        &[TraitType::EvidenceReliance, TraitType::Reliability, TraitType::Caution],
+        &[
+            TraitType::EvidenceReliance,
+            TraitType::Reliability,
+            TraitType::Caution,
+        ],
     );
 
-    (cluster_confidence * 0.4 + lesson_confidence * 0.25 + goal_confidence * 0.15 + evidence_trait * 0.2)
+    (cluster_confidence * 0.4
+        + lesson_confidence * 0.25
+        + goal_confidence * 0.15
+        + evidence_trait * 0.2)
         .clamp(0.0, 1.0)
 }
 
@@ -407,7 +423,10 @@ fn novelty_score(cluster: &[&Node], lessons: &[Lesson], trait_snapshot: &[TraitS
         .map(|lesson| lesson.lesson_type as u8)
         .collect::<HashSet<_>>()
         .len() as f32;
-    let novelty_trait = trait_strength(trait_snapshot, &[TraitType::NoveltySeeking, TraitType::Curiosity]);
+    let novelty_trait = trait_strength(
+        trait_snapshot,
+        &[TraitType::NoveltySeeking, TraitType::Curiosity],
+    );
 
     ((unique_tags / 6.0).clamp(0.0, 1.0) * 0.4
         + (type_diversity / 4.0).clamp(0.0, 1.0) * 0.25
@@ -421,7 +440,11 @@ fn usefulness_score(goal: Option<&Node>, lessons: &[Lesson], trait_snapshot: &[T
     let lesson_confidence = average(lessons.iter().map(|lesson| lesson.confidence));
     let practical_trait = trait_strength(
         trait_snapshot,
-        &[TraitType::Practicality, TraitType::Proactivity, TraitType::EvidenceReliance],
+        &[
+            TraitType::Practicality,
+            TraitType::Proactivity,
+            TraitType::EvidenceReliance,
+        ],
     );
 
     (goal_importance * 0.45 + lesson_confidence * 0.25 + practical_trait * 0.3).clamp(0.0, 1.0)
@@ -514,7 +537,10 @@ mod tests {
             .expect("scenario generation should work");
 
         assert_eq!(response.scenarios.len(), 2);
-        assert_eq!(response.scenarios[0].status, memory_core::ImaginationStatus::Proposed);
+        assert_eq!(
+            response.scenarios[0].status,
+            memory_core::ImaginationStatus::Proposed
+        );
         assert!(!response.scenarios[0].basis_source_node_ids.is_empty());
         assert!(response.scenarios[0]
             .basis_source_node_ids
@@ -534,7 +560,11 @@ mod tests {
             vec![verified_node.clone()],
             Vec::new(),
             Vec::new(),
-            vec![sample_trait(TraitType::EvidenceReliance, "Evidence Reliance", 0.9)],
+            vec![sample_trait(
+                TraitType::EvidenceReliance,
+                "Evidence Reliance",
+                0.9,
+            )],
         );
 
         let response = service
@@ -547,15 +577,17 @@ mod tests {
             .expect("scenario generation should work");
 
         assert_eq!(packet.nodes.len(), 1);
-        assert!(packet.nodes.iter().all(|node| node.node_type != NodeType::Imagined));
+        assert!(packet
+            .nodes
+            .iter()
+            .all(|node| node.node_type != NodeType::Imagined));
         assert!(response
             .scenarios
             .iter()
             .all(|scenario| packet.nodes.iter().all(|node| node.id.0 != scenario.id.0)));
-        assert!(response
-            .scenarios
-            .iter()
-            .all(|scenario| scenario.status != memory_core::ImaginationStatus::AcceptedAsHypothesis));
+        assert!(response.scenarios.iter().all(
+            |scenario| scenario.status != memory_core::ImaginationStatus::AcceptedAsHypothesis
+        ));
     }
 
     fn sample_packet(
