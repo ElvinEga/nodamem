@@ -175,6 +175,16 @@ pub fn compact_propose_lesson(response: ProposeLessonResponse) -> OpenClawPropos
                         .map(|link| link.node_id)
                         .collect(),
                 },
+                LessonOutcomeDto::WeakenExisting {
+                    updated_lesson,
+                    evidence_links,
+                } => OpenClawLessonProposalOutcome::WeakenExisting {
+                    lesson_title: updated_lesson.title,
+                    evidence_node_ids: evidence_links
+                        .into_iter()
+                        .map(|link| link.node_id)
+                        .collect(),
+                },
                 LessonOutcomeDto::ContradictionHook {
                     target_lesson_id,
                     evidence_links,
@@ -435,6 +445,8 @@ mod tests {
                     previous_strength: 0.5,
                     updated_strength: 0.6,
                 }],
+                trait_events: Vec::new(),
+                refreshed_self_model: None,
             })
         }
 
