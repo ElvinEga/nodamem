@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 
+use chrono::Utc;
 use libsql::{params, Connection};
 use memory_core::{
-    Checkpoint, Edge, ImaginedScenario, Lesson, LessonId, Node, NodeId, ScenarioId, SelfModel,
-    TraitEvent, TraitId, TraitState, WorkingMemoryEntry,
+    Checkpoint, Edge, ImaginedScenario, Lesson, LessonId, MemoryStatus, Node, NodeId, NodeType,
+    ScenarioId, SelfModel, TraitEvent, TraitId, TraitState, WorkingMemoryEntry,
 };
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -38,6 +39,15 @@ pub struct NodeEmbeddingRecord {
 pub struct VectorSearchMatch {
     pub node_id: NodeId,
     pub similarity_score: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeActionEvent {
+    pub id: String,
+    pub node_id: NodeId,
+    pub event_type: String,
+    pub reason: String,
+    pub created_at: memory_core::Timestamp,
 }
 
 impl LessonSourceRole {
@@ -118,7 +128,8 @@ impl<'a> StoreRepository<'a> {
                      confidence = ?8,
                      importance = ?9,
                      last_accessed_at = ?10,
-                     source_event_id = ?11
+                     source_event_id = ?11,
+                     updated_at = ?12
                  WHERE id = ?1",
                 params![
                     node.id.0.to_string(),
@@ -132,11 +143,118 @@ impl<'a> StoreRepository<'a> {
                     f64::from(node.importance),
                     format_optional_timestamp(node.last_accessed_at),
                     node.source_event_id.clone(),
+                    format_timestamp(node.updated_at),
                 ],
             )
             .await?;
 
         self.get_node_by_id(node.id).await
+    }
+
+    pub async fn append_node_action_event(
+        &self,
+        node_id: NodeId,
+        event_type: &str,
+        reason: &str,
+    ) -> Result<NodeActionEvent, StoreError> {
+        let created_at = Utc::now();
+        let id = Uuid::new_v4().to_string();
+        self.connection
+            .execute(
+                "INSERT INTO node_action_events (id, node_id, event_type, reason, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    id.clone(),
+                    node_id.0.to_string(),
+                    event_type.trim(),
+                    reason.trim(),
+                    format_timestamp(created_at),
+                ],
+            )
+            .await?;
+
+        Ok(NodeActionEvent {
+            id,
+            node_id,
+            event_type: event_type.trim().to_owned(),
+            reason: reason.trim().to_owned(),
+            created_at,
+        })
+    }
+
+    pub async fn load_node_action_events(
+        &self,
+        node_id: NodeId,
+        limit: usize,
+    ) -> Result<Vec<NodeActionEvent>, StoreError> {
+        let limit = i64::try_from(limit.max(1)).unwrap_or(i64::MAX);
+        let mut rows = self
+            .connection
+            .query(
+                "SELECT id, node_id, event_type, reason, created_at
+                 FROM node_action_events
+                 WHERE node_id = ?1
+                 ORDER BY created_at DESC
+                 LIMIT ?2",
+                params![node_id.0.to_string(), limit],
+            )
+            .await?;
+
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().await? {
+            events.push(NodeActionEvent {
+                id: row.get::<String>(0)?,
+                node_id: NodeId(Uuid::parse_str(&row.get::<String>(1)?)?),
+                event_type: row.get(2)?,
+                reason: row.get(3)?,
+                created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<String>(4)?)?
+                    .with_timezone(&Utc),
+            });
+        }
+
+        Ok(events)
+    }
+
+    pub async fn archive_node(
+        &self,
+        node_id: NodeId,
+        reason: &str,
+    ) -> Result<Option<Node>, StoreError> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(StoreError::InvalidValue {
+                field: "reason",
+                value: "archive reason must not be empty".to_owned(),
+            });
+        }
+
+        let Some(mut node) = self.get_node_by_id(node_id).await? else {
+            return Ok(None);
+        };
+
+        if node.node_type == NodeType::Imagined {
+            return Err(StoreError::InvalidValue {
+                field: "node_id",
+                value: "imagined nodes must not be archived via verified-node action".to_owned(),
+            });
+        }
+
+        if matches!(node.status, MemoryStatus::Archived | MemoryStatus::Pruned) {
+            return Err(StoreError::InvalidValue {
+                field: "node_id",
+                value: format!("node is not archivable from status {}", format_memory_status(node.status)),
+            });
+        }
+
+        node.status = MemoryStatus::Archived;
+        node.updated_at = Utc::now();
+        let saved = self
+            .update_node(&node)
+            .await?
+            .ok_or_else(|| missing_row("node", node.id.0))?;
+        self.append_node_action_event(node_id, "archived", reason).await?;
+
+        Ok(Some(saved))
     }
 
     pub async fn insert_edge(&self, edge: &Edge) -> Result<Edge, StoreError> {
@@ -797,6 +915,7 @@ impl<'a> StoreRepository<'a> {
             .into_iter()
             .filter(|trait_state| trait_state.supporting_node_ids.contains(&node_id))
             .collect::<Vec<_>>();
+        let action_events = self.load_node_action_events(node_id, 5).await?;
         let checkpoints = self
             .load_all_checkpoints()
             .await?
@@ -813,6 +932,9 @@ impl<'a> StoreRepository<'a> {
             inbound_edges.len(),
             outbound_edges.len()
         ));
+        if node.status == MemoryStatus::Archived {
+            reasons.push("current status: archived".to_owned());
+        }
         if !supporting_lessons.is_empty() {
             reasons.push(format!(
                 "supports lessons: {}",
@@ -842,6 +964,9 @@ impl<'a> StoreRepository<'a> {
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
+        }
+        for event in action_events {
+            reasons.push(format!("recent node event: {} ({})", event.event_type, event.reason));
         }
 
         debug!(
@@ -1596,6 +1721,49 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("evidence counts")));
+    }
+
+    #[tokio::test]
+    async fn archiving_node_records_event_and_preserves_audit_trail() {
+        let runtime = open_test_runtime().await;
+        let repository = StoreRepository::new(&runtime.connection);
+
+        let node = repository
+            .insert_node(&sample_node("archive me", NodeType::Preference))
+            .await
+            .expect("node insert should work");
+
+        let archived = repository
+            .archive_node(node.id, "archived from graph ui")
+            .await
+            .expect("archive should succeed")
+            .expect("node should exist");
+
+        assert_eq!(archived.status, MemoryStatus::Archived);
+
+        let events = repository
+            .load_node_action_events(node.id, 10)
+            .await
+            .expect("action events should load");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "archived");
+        assert_eq!(events[0].reason, "archived from graph ui");
+
+        let audit = repository
+            .inspect_node_audit(node.id)
+            .await
+            .expect("node audit should work")
+            .expect("node audit should exist");
+        assert_eq!(audit.node.status, MemoryStatus::Archived);
+        assert_eq!(audit.node.source_event_id.as_deref(), Some("event-1"));
+        assert!(audit
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("recent node event: archived (archived from graph ui)")));
+        assert!(audit
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("source event: event-1")));
     }
 
     #[tokio::test]
