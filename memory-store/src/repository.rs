@@ -257,6 +257,52 @@ impl<'a> StoreRepository<'a> {
         Ok(Some(saved))
     }
 
+    pub async fn unarchive_node(
+        &self,
+        node_id: NodeId,
+        reason: &str,
+    ) -> Result<Option<Node>, StoreError> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(StoreError::InvalidValue {
+                field: "reason",
+                value: "unarchive reason must not be empty".to_owned(),
+            });
+        }
+
+        let Some(mut node) = self.get_node_by_id(node_id).await? else {
+            return Ok(None);
+        };
+
+        if node.node_type == NodeType::Imagined {
+            return Err(StoreError::InvalidValue {
+                field: "node_id",
+                value: "imagined nodes must not be restored via verified-node action".to_owned(),
+            });
+        }
+
+        if node.status != MemoryStatus::Archived {
+            return Err(StoreError::InvalidValue {
+                field: "node_id",
+                value: format!(
+                    "node is not restorable from status {}",
+                    format_memory_status(node.status)
+                ),
+            });
+        }
+
+        node.status = MemoryStatus::Active;
+        node.updated_at = Utc::now();
+        let saved = self
+            .update_node(&node)
+            .await?
+            .ok_or_else(|| missing_row("node", node.id.0))?;
+        self.append_node_action_event(node_id, "unarchived", reason)
+            .await?;
+
+        Ok(Some(saved))
+    }
+
     pub async fn insert_edge(&self, edge: &Edge) -> Result<Edge, StoreError> {
         self.connection
             .execute(
@@ -1764,6 +1810,49 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("source event: event-1")));
+    }
+
+    #[tokio::test]
+    async fn unarchiving_node_records_event_and_restores_status() {
+        let runtime = open_test_runtime().await;
+        let repository = StoreRepository::new(&runtime.connection);
+
+        let node = repository
+            .insert_node(&sample_node("restore me", NodeType::Preference))
+            .await
+            .expect("node insert should work");
+
+        repository
+            .archive_node(node.id, "archived for cleanup")
+            .await
+            .expect("archive should succeed");
+        let restored = repository
+            .unarchive_node(node.id, "restored after review")
+            .await
+            .expect("unarchive should succeed")
+            .expect("node should exist");
+
+        assert_eq!(restored.status, MemoryStatus::Active);
+
+        let events = repository
+            .load_node_action_events(node.id, 10)
+            .await
+            .expect("action events should load");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "unarchived");
+        assert_eq!(events[0].reason, "restored after review");
+        assert_eq!(events[1].event_type, "archived");
+
+        let audit = repository
+            .inspect_node_audit(node.id)
+            .await
+            .expect("node audit should work")
+            .expect("node audit should exist");
+        assert_eq!(audit.node.status, MemoryStatus::Active);
+        assert!(audit
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("recent node event: unarchived (restored after review)")));
     }
 
     #[tokio::test]
