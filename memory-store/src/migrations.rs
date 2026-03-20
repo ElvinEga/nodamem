@@ -92,6 +92,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "imagined_nodes_grounding_fields",
         sql: include_str!("../migrations/0015_imagined_nodes_grounding_fields.sql"),
     },
+    Migration {
+        version: "0016",
+        name: "node_action_events",
+        sql: include_str!("../migrations/0016_node_action_events.sql"),
+    },
 ];
 
 pub async fn run_migrations(connection: &Connection) -> Result<(), StoreError> {
